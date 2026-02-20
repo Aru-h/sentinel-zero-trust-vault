@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinel Zero Trust Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #1e293b; border: 1px solid #334155; color: white; }
+        .table { color: #cbd5e1; }
+        .table-hover tbody tr:hover { background-color: #334155; color: white; }
+        .text-neon { color: #3b82f6; text-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+        .alert-threat { background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #fca5a5; }
+        .badge-denied { background-color: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark border-bottom border-secondary mb-4">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1 fw-bold">
+                <span class="text-primary">SENTINEL</span> ZERO <span class="fs-6 text-muted">| Admin Console</span>
+            </span>
+            <div class="d-flex align-items-center gap-3">
+                <span class="badge bg-primary">{{ user_name }} ({{ user_role }})</span>
+                <a href="/logout" class="btn btn-sm btn-outline-danger">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        
+        <!-- Threat Alert Banner -->
+        <div id="threat-container" class="mb-4" style="display: none;">
+            <div class="alert alert-threat d-flex align-items-center" role="alert">
+                <div class="flex-grow-1">
+                    <h5 class="alert-heading fw-bold mb-1">⚠️ INSIDER THREAT DETECTED</h5>
+                    <p class="mb-0" id="threat-message">Suspicious activity detected.</p>
+                </div>
+                <div class="spinner-grow text-danger" role="status">
+                    <span class="visually-hidden">Live</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="row g-4 mb-4">
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <h6 class="card-title text-muted text-uppercase">Total Access Attempts</h6>
+                        <h1 class="display-4 fw-bold text-light" id="total-req">0</h1>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card h-100" style="border-color: #ef4444;">
+                    <div class="card-body text-center">
+                        <h6 class="card-title text-danger text-uppercase">Denied Attempts</h6>
+                        <h1 class="display-4 fw-bold text-danger" id="denied-req">0</h1>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Violations Table -->
+        <div class="card">
+            <div class="card-header bg-transparent border-secondary fw-bold text-uppercase d-flex justify-content-between align-items-center">
+                <span>Recent Access Violations</span>
+                <span class="badge bg-secondary" id="last-updated">Updating...</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0 align-middle">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Time</th>
+                                <th>User</th>
+                                <th>Role</th>
+                                <th>Target Document</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="violations-body">
+                            <tr><td colspan="5" class="text-center py-4">Loading secure logs...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = '/api/admin/stats';
+        
+        async function fetchStats() {
+            try {
+                // Fetch using browser cookies for session authentication
+                const response = await fetch(API_URL);
+                
+                if (response.status === 401 || response.status === 403) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+                const data = await response.json();
+
+                // Update Counts
+                document.getElementById('total-req').innerText = data.total_requests;
+                document.getElementById('denied-req').innerText = data.denied_requests;
+
+                // Update Threats
+                const threatContainer = document.getElementById('threat-container');
+                const threatMsg = document.getElementById('threat-message');
+                
+                if (data.threats.length > 0) {
+                    threatContainer.style.display = 'block';
+                    const users = data.threats.map(t => `${t.user_name} (${t.deny_count} denials)`).join(', ');
+                    threatMsg.innerText = `Suspicious high-frequency access denials detected for: ${users}`;
+                } else {
+                    threatContainer.style.display = 'none';
+                }
+
+                // Update Table
+                const tbody = document.getElementById('violations-body');
+                if (data.violations.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">No recent violations found.</td></tr>';
+                } else {
+                    tbody.innerHTML = data.violations.map(log => {
+                        const date = new Date(log.timestamp * 1000).toLocaleTimeString();
+                        return `
+                            <tr>
+                                <td class="font-monospace text-muted">${date}</td>
+                                <td class="fw-bold text-white">${log.user_name}</td>
+                                <td><span class="badge bg-dark border border-secondary">${log.user_role}</span></td>
+                                <td>${log.doc_title}</td>
+                                <td><span class="badge badge-denied">${log.reason}</span></td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+                // Timestamp
+                document.getElementById('last-updated').innerText = 'Last updated: ' + new Date().toLocaleTimeString();
+
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+            }
+        }
+
+        // Initial Load and Polling
+        fetchStats();
+        setInterval(fetchStats, 3000); // Poll every 3 seconds
+    </script>
+</body>
+</html>
