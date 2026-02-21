@@ -4,8 +4,8 @@
 - Frontend: `https://sentinel-zero-trust-vault.vercel.app`
 - Backend: `https://sentinel-zero-trust-vault.onrender.com`
 
-## 1) Vercel rewrite config (`frontend/vercel.json`)
-Use this exact file so frontend API/auth requests route to backend:
+## 1) Vercel project config (`vercel.json` at repo root)
+Use this exact root file so Vercel builds from `frontend/`, serves `frontend/dist`, and routes API/auth requests to backend:
 
 ```json
 {
