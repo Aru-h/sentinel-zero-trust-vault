@@ -51,3 +51,10 @@ Open the frontend and confirm:
 - Login request goes to `/login` (rewritten to Render backend)
 - API calls go to `/api/*`
 - Session persists after login
+
+## If Render shows `Could not open requirements.txt`
+Your backend service is running from repo root instead of `backend/`.
+
+Fix either way:
+- Set **Root Directory** to `backend` in Render service settings, then redeploy.
+- Or keep root at repo root; this repo now has a fallback build/start command in `render.yaml` that handles both paths.
