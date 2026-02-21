@@ -25,6 +25,25 @@ your-repo/
 
 Push everything to GitHub (or GitLab/Bitbucket).
 
+If this is your first push, run:
+
+```bash
+git init
+git add .
+git commit -m "Prepare frontend/backend layout for deployment"
+git branch -M main
+git remote add origin https://github.com/<your-username>/<your-repo>.git
+git push -u origin main
+```
+
+If the repo already exists and you just changed files:
+
+```bash
+git add .
+git commit -m "Update deployment-ready repo structure"
+git push
+```
+
 ---
 
 ## Step 2 — Deploy via Blueprint
