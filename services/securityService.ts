@@ -1,99 +1,43 @@
-import { User, Document, AccessResult, AccessLog, ThreatAlert, Role, Classification } from '../types';
-import { THREAT_THRESHOLD_COUNT, THREAT_WINDOW_MS } from '../constants';
-import { v4 as uuidv4 } from 'uuid';
+/**
+ * securityService.ts — CLIENT-SIDE UI STATE ONLY
+ *
+ * IMPORTANT: This service does NOT enforce access control.
+ * All policy decisions are made exclusively by the backend (/api/access).
+ *
+ * This file is a thin UI helper. It exists only to manage the
+ * in-memory log/alert state that is reflected in the dashboard.
+ *
+ * The previous version contained a full duplicate of the backend
+ * policy engine (SecurityEngine.checkAccess). That code was removed
+ * because:
+ *   1. It compiled into the client bundle, revealing policy logic to attackers.
+ *   2. It could give developers false confidence that access is enforced client-side.
+ *   3. It was dead code — the backend already re-enforces everything.
+ */
 
-// In-memory store for simulation
-let logs: AccessLog[] = [];
-let alerts: ThreatAlert[] = [];
+import { AccessLog, ThreatAlert } from '../types';
 
-export const SecurityEngine = {
-  
-  checkAccess: (user: User, doc: Document): { result: AccessResult; reason: string } => {
-    // 1. Public documents are accessible by everyone
-    if (doc.classification === Classification.PUBLIC) {
-      return { result: AccessResult.ALLOWED, reason: 'Public Classification' };
-    }
+let _logs: AccessLog[]     = [];
+let _alerts: ThreatAlert[] = [];
 
-    // 2. Admins have override access to everything EXCEPT strict separation of duties (optional, but let's say Admin can see all for this demo)
-    if (user.role === Role.ADMIN) {
-      return { result: AccessResult.ALLOWED, reason: 'Admin Override' };
-    }
-
-    // 3. Department matching for Confidential/Restricted
-    const isSameDepartment = doc.department === 'General' || doc.department === user.role;
-
-    if (doc.classification === Classification.INTERNAL) {
-        // Internal docs: Any authenticated user can view (in this zero trust model, "authenticated" is assumed if they are in the system, but let's enforce dept check for stricter zero trust if desired. Standard ZT: Least Privilege).
-        // Let's say Internal is open to all employees.
-        return { result: AccessResult.ALLOWED, reason: 'Internal Access Policy' };
-    }
-
-    if (doc.classification === Classification.CONFIDENTIAL) {
-      if (isSameDepartment) {
-        return { result: AccessResult.ALLOWED, reason: 'Role-Based Access (Department Match)' };
-      }
-      return { result: AccessResult.DENIED, reason: 'Department Mismatch' };
-    }
-
-    if (doc.classification === Classification.RESTRICTED) {
-      // Restricted requires explicit check even if same department (Simulation: Random MFA failure or stricter role check)
-      if (isSameDepartment) {
-         // In a real app, we'd check an Access Control List (ACL).
-         // For this hackathon demo: Only Admin can view Restricted, OR the specific Department Head. 
-         // Let's assume standard users cannot view Restricted even in their own department without escalation.
-         return { result: AccessResult.DENIED, reason: 'Restricted: Escalation Required' };
-      }
-      return { result: AccessResult.DENIED, reason: 'Restricted: Unauthorized' };
-    }
-
-    return { result: AccessResult.DENIED, reason: 'Implicit Deny' };
+export const UISecurityState = {
+  appendLog(log: AccessLog): void {
+    _logs = [log, ..._logs];
   },
 
-  logAccess: (user: User, doc: Document, result: AccessResult, reason: string): AccessLog => {
-    const log: AccessLog = {
-      id: uuidv4(),
-      timestamp: Date.now(),
-      userId: user.id,
-      userName: user.name,
-      userRole: user.role,
-      documentId: doc.id,
-      documentTitle: doc.title,
-      result,
-      reason,
-    };
-    logs = [log, ...logs]; // Prepend
-    return log;
-  },
-
-  detectInsiderThreat: (user: User): ThreatAlert | null => {
+  appendAlert(alert: ThreatAlert): void {
     const now = Date.now();
-    // Filter logs for this user, denied, within the window
-    const recentDenials = logs.filter(
-      l => l.userId === user.id && 
-      l.result === AccessResult.DENIED && 
-      (now - l.timestamp) < THREAT_WINDOW_MS
+    const duplicate = _alerts.some(
+      a => a.userId === alert.userId && now - a.timestamp < 60_000
     );
-
-    if (recentDenials.length >= THREAT_THRESHOLD_COUNT) {
-      const alert: ThreatAlert = {
-        id: uuidv4(),
-        timestamp: now,
-        userId: user.id,
-        userName: user.name,
-        severity: recentDenials.length > 5 ? 'CRITICAL' : 'HIGH',
-        description: `Multiple denied access attempts (${recentDenials.length}) detected within 1 minute. Possible lateral movement or credential compromise.`,
-      };
-      // Check if we recently alerted for this to avoid spamming (simple debounce)
-      const existingRecentAlert = alerts.find(a => a.userId === user.id && (now - a.timestamp) < THREAT_WINDOW_MS);
-      if (!existingRecentAlert) {
-        alerts = [alert, ...alerts];
-        return alert;
-      }
-    }
-    return null;
+    if (!duplicate) _alerts = [alert, ..._alerts];
   },
 
-  getLogs: () => logs,
-  getAlerts: () => alerts,
-  clearLogs: () => { logs = []; alerts = []; }
+  getLogs():   AccessLog[]    { return _logs; },
+  getAlerts(): ThreatAlert[]  { return _alerts; },
+
+  clear(): void {
+    _logs   = [];
+    _alerts = [];
+  },
 };

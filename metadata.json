@@ -1,5 +1,5 @@
 {
   "name": "Sentinel Zero Trust Vault",
-  "description": "A simulation of a Zero Trust secure knowledge access system featuring RBAC, document classification, real-time access logging, and AI-powered insider threat detection.",
+  "description": "A simulation of a Zero Trust secure knowledge access system featuring RBAC, document classification, real-time access logging, and rule-based insider threat detection.",
   "requestFramePermissions": []
 }

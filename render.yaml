@@ -1,0 +1,85 @@
+# render.yaml — Sentinel Zero Trust
+# Defines both services so one "Blueprint" deploy sets up everything.
+#
+# HOW TO USE:
+#   1. Push your repo to GitHub
+#   2. Go to https://dashboard.render.com → New → Blueprint
+#   3. Connect your repo → Render reads this file automatically
+#   4. After first deploy, copy the backend URL and set VITE_API_URL
+#      on the frontend service (see DEPLOY_GUIDE.md for exact steps)
+
+services:
+
+  # ── BACKEND (Flask / Gunicorn) ────────────────────────────────────
+  - type: web
+    name: sentinel-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    plan: free
+
+    disk:
+      name: sentinel-db
+      mountPath: /data
+      sizeGB: 1       # SQLite lives here — survives redeploys
+
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true          # Render generates a cryptographically secure value
+
+      - key: FLASK_ENV
+        value: production
+
+      - key: FLASK_DEBUG
+        value: "false"
+
+      - key: DB_PATH
+        value: /data/sentinel.db     # Points to the persistent disk
+
+      # Passwords — set these manually in the Render dashboard after deploy
+      # Never commit real values here.
+      - key: ADMIN_PASSWORD
+        sync: false                  # Marks as secret; Render will prompt you
+      - key: HR_PASSWORD
+        sync: false
+      - key: DEV_PASSWORD
+        sync: false
+      - key: FIN_PASSWORD
+        sync: false
+
+      # Set this AFTER the frontend is deployed (copy its onrender.com URL)
+      - key: CORS_ORIGINS
+        value: https://sentinel-frontend.onrender.com   # ← update this
+
+  # ── FRONTEND (Vite / React Static Site) ──────────────────────────
+  - type: web
+    name: sentinel-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    plan: free
+
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=()"
+
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html     # SPA fallback — prevents 404 on refresh
+
+    envVars:
+      # Set this to your backend's onrender.com URL after it deploys
+      - key: VITE_API_URL
+        value: https://sentinel-backend.onrender.com   # ← update this
