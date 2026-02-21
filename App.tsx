@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { MOCK_DOCUMENTS, API_URL } from './constants';
 import { User, Document, Role, AccessLog, ThreatAlert } from './types';
 import { ThreatDashboard } from './components/ThreatDashboard';
