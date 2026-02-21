@@ -5,8 +5,6 @@
 #   1. Push your repo to GitHub
 #   2. Go to https://dashboard.render.com → New → Blueprint
 #   3. Connect your repo → Render reads this file automatically
-#   4. After first deploy, copy the backend URL and set VITE_API_URL
-#      on the frontend service (see DEPLOY_GUIDE.md for exact steps)
 
 services:
 
@@ -50,7 +48,7 @@ services:
 
       # Set this AFTER the frontend is deployed (copy its onrender.com URL)
       - key: CORS_ORIGINS
-        value: https://sentinel-frontend.onrender.com   # ← update this
+        value: https://sentinel-frontend.onrender.com,https://sentinel-zero-trust-vault.vercel.app
 
   # ── FRONTEND (Vite / React Static Site) ──────────────────────────
   - type: web
@@ -80,7 +78,3 @@ services:
         source: /*
         destination: /index.html     # SPA fallback — prevents 404 on refresh
 
-    envVars:
-      # Set this to your backend's onrender.com URL after it deploys
-      - key: VITE_API_URL
-        value: https://sentinel-backend.onrender.com   # ← update this

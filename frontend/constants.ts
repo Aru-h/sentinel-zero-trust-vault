@@ -1,9 +1,10 @@
 import { Classification, Document, Role } from './types';
 
-// Backend URL — set via VITE_API_URL environment variable in Render dashboard
-// Local dev: create a .env.local with VITE_API_URL=http://localhost:5001
-export const API_URL: string =
-  (import.meta as any).env?.VITE_API_URL || 'http://localhost:5001';
+// Zero-config API base:
+// - Vite dev server proxies API/auth routes to http://localhost:5001
+// - Vercel rewrites API/auth routes to the production backend
+// This keeps client code environment-variable free.
+export const API_URL: string = '';
 
 export const MOCK_DOCUMENTS: Document[] = [
   { id: 'd1',  title: 'Company Handbook',             classification: Classification.PUBLIC,       department: 'General',     locked: false },

@@ -16,7 +16,7 @@ your-repo/
 ├── frontend/
 │   ├── vite.config.ts
 │   ├── package.json
-│   └── constants.ts         ← uses import.meta.env.VITE_API_URL
+│   └── constants.ts         ← uses built-in zero-config API routing
 └── backend/
     ├── app.py
     ├── requirements.txt
@@ -84,17 +84,7 @@ After both services finish deploying:
    ```
 3. Click **Save Changes** — backend redeploys automatically
 
-### 4b — Update the frontend's API URL
-1. Go to your **sentinel-frontend** service → **Environment**
-2. Update `VITE_API_URL` to your actual backend URL:
-   ```
-   https://sentinel-backend.onrender.com
-   ```
-3. Click **Save Changes** — frontend redeploys with the correct URL baked in
-
-> **Why the two-step?** Render assigns URLs only after the first deploy.
-> The `render.yaml` uses placeholder URLs that you replace once you know
-> the real ones. This is a one-time setup.
+> Frontend-to-backend routing is zero-config now: client requests use relative paths and deployment rewrites/proxies route them to backend.
 
 ---
 
@@ -125,12 +115,8 @@ Open `https://sentinel-frontend.onrender.com` and log in with:
 ## Local development (still works)
 
 ```bash
-# Create frontend env file
-cd frontend
-echo "VITE_API_URL=http://localhost:5001" > .env.local
-
 # Backend
-cd ../backend
+cd backend
 export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 python app.py
 
@@ -149,8 +135,7 @@ npm install && npm run dev
   Check that env var is set correctly on the backend service.
 
 **Frontend shows "Connection error"**
-→ `VITE_API_URL` is pointing at the wrong URL, or the backend hasn't woken up yet.
-  Try opening the backend URL directly in a browser first.
+→ Backend may be down/asleep or unreachable. Try opening the backend URL directly in a browser first.
 
 **"Too many login attempts" immediately**
 → The rate limiter is per-worker and in-memory. On Render free tier with 2

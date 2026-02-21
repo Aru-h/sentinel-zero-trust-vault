@@ -22,15 +22,9 @@ CORS_ORIGINS=http://localhost:5173
 FLASK_DEBUG=false
 ```
 
-## Frontend (`frontend/.env.local`)
+## Frontend
 
-```bash
-# Backend API URL — no trailing slash
-VITE_API_URL=http://localhost:5001
-```
-
-> **Do not commit `.env` or `.env.local` to version control.**
-> Add both to `.gitignore`.
+No frontend environment variables are required. API/auth routes are proxied automatically in development and rewritten automatically on Vercel.
 
 ## Quick start (development)
 
@@ -42,7 +36,6 @@ python app.py
 
 # Terminal 2 — frontend
 cd frontend
-echo "VITE_API_URL=http://localhost:5001" > .env.local
 npm install
 npm run dev
 ```
