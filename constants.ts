@@ -2,7 +2,8 @@ import { Classification, Document, Role } from './types';
 
 // Backend URL — set via VITE_API_URL environment variable in Render dashboard
 // Local dev: create a .env.local with VITE_API_URL=http://localhost:5001
-export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:5001';
+export const API_URL: string =
+  (import.meta as any).env?.VITE_API_URL || 'http://localhost:5001';
 
 export const MOCK_DOCUMENTS: Document[] = [
   { id: 'd1',  title: 'Company Handbook',             classification: Classification.PUBLIC,       department: 'General',     locked: false },
