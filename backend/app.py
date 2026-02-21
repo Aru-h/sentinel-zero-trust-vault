@@ -24,15 +24,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 
 # ------------------------------------------------------------------ #
-#  SECRET KEY — required, no fallback                                 #
+#  SECRET KEY — env preferred, demo fallback for one-click deploys    #
 # ------------------------------------------------------------------ #
-_secret = os.environ.get('SECRET_KEY')
-if not _secret:
-    raise RuntimeError(
-        "SECRET_KEY environment variable is not set.\n"
-        "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
-    )
-app.secret_key = _secret
+app.secret_key = os.environ.get('SECRET_KEY', 'sentinel-demo-secret-change-me')
 
 # ------------------------------------------------------------------ #
 #  Environment flags                                                  #

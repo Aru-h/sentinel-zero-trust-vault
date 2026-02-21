@@ -58,3 +58,8 @@ Your backend service is running from repo root instead of `backend/`.
 Fix either way:
 - Set **Root Directory** to `backend` in Render service settings, then redeploy.
 - Or keep root at repo root; this repo now has a fallback build/start command in `render.yaml` that handles both paths.
+
+## If Render shows `No module named 'your_application'`
+Render is using its default start command (`gunicorn your_application.wsgi`).
+This repo now includes a compatible module at `your_application/wsgi.py` that maps to `backend.app`.
+If you still see the error, clear the service cache and redeploy the latest commit.
