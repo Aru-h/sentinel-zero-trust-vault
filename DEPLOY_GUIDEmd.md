@@ -4,8 +4,12 @@
 - Frontend: `https://sentinel-zero-trust-vault.vercel.app`
 - Backend: `https://sentinel-zero-trust-vault.onrender.com`
 
-## 1) Vercel project config (`vercel.json` at repo root)
-Use this exact root file so Vercel builds from `frontend/`, serves `frontend/dist`, and routes API/auth requests to backend:
+## 1) Vercel project config
+Use the `vercel.json` that matches your Vercel Root Directory:
+- Root Directory = repository root → use `/vercel.json`
+- Root Directory = `frontend` → use `/frontend/vercel.json`
+
+Both files in this repo route API/auth requests to backend and include SPA fallback:
 
 ```json
 {
@@ -21,6 +25,10 @@ Use this exact root file so Vercel builds from `frontend/`, serves `frontend/dis
     {
       "source": "/logout",
       "destination": "https://sentinel-zero-trust-vault.onrender.com/logout"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }

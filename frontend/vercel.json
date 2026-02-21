@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://sentinel-zero-trust-vault.onrender.com/api/:path*"
+    },
+    {
+      "source": "/login",
+      "destination": "https://sentinel-zero-trust-vault.onrender.com/login"
+    },
+    {
+      "source": "/logout",
+      "destination": "https://sentinel-zero-trust-vault.onrender.com/logout"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
