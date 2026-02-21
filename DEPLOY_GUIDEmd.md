@@ -61,5 +61,5 @@ Fix either way:
 
 ## If Render shows `No module named 'your_application'`
 Render is using its default start command (`gunicorn your_application.wsgi`).
-This repo now includes a compatible module at `your_application/wsgi.py` that maps to `backend.app`.
+This repo now includes compatible modules at both `your_application/wsgi.py` (repo root) and `backend/your_application/wsgi.py` (backend root) so either Render working directory can import it.
 If you still see the error, clear the service cache and redeploy the latest commit.
