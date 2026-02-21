@@ -348,13 +348,17 @@ def get_admin_stats():
     total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM access_logs WHERE access_result='DENIED'")
     denied = c.fetchone()[0]
-    c.execute("SELECT * FROM access_logs WHERE access_result='DENIED' ORDER BY timestamp DESC LIMIT 10")
-    violations = [dict(r) for r in c.fetchall()]
+    c.execute("SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT 50")
+    recent_events = [dict(r) for r in c.fetchall()]
+    violations = [event for event in recent_events if event['access_result'] == 'DENIED'][:10]
     conn.close()
 
     return jsonify({
-        'total_requests': total, 'denied_requests': denied,
-        'violations': violations, 'threats': get_flagged_users()
+        'total_requests': total,
+        'denied_requests': denied,
+        'recent_events': recent_events,
+        'violations': violations,
+        'threats': get_flagged_users(),
     })
 
 # ------------------------------------------------------------------ #

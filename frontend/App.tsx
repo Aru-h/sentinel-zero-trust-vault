@@ -1,10 +1,33 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MOCK_DOCUMENTS, API_URL } from './constants';
-import { User, Document, Role, AccessLog, ThreatAlert } from './types';
+import { User, Document, Role, AccessLog, ThreatAlert, AccessResult } from './types';
 import { ThreatDashboard } from './components/ThreatDashboard';
 import { AccessDenyModal } from './components/AccessDenyModal';
 import { DocumentReader } from './components/DocumentReader';
 import { LoginScreen } from './components/LoginScreen';
+
+interface BackendAccessEvent {
+  id: string;
+  timestamp: number;
+  user_id: string;
+  user_name: string;
+  user_role: Role;
+  document_id: string;
+  document_title: string;
+  access_result: AccessResult;
+  reason: string;
+}
+
+interface BackendThreat {
+  user_id: string;
+  user_name: string;
+  deny_count: number;
+}
+
+interface AdminStatsResponse {
+  recent_events?: BackendAccessEvent[];
+  threats?: BackendThreat[];
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -120,6 +143,49 @@ function App() {
       console.error('Access request failed', e);
     }
   };
+
+  useEffect(() => {
+    if (!isAuthenticated || currentUser?.role !== Role.ADMIN) return;
+
+    const loadAdminStats = async () => {
+      try {
+        const res = await authFetch(`${API_URL}/api/admin/stats`);
+        if (res.status === 401) { handleLogout(); return; }
+        if (!res.ok) return;
+
+        const data: AdminStatsResponse = await res.json();
+        const syncedLogs: AccessLog[] = (data.recent_events ?? []).map((event) => ({
+          id: event.id,
+          timestamp: Math.round((event.timestamp ?? 0) * 1000),
+          userId: event.user_id,
+          userName: event.user_name,
+          userRole: event.user_role,
+          documentId: event.document_id,
+          documentTitle: event.document_title,
+          result: event.access_result,
+          reason: event.reason,
+        }));
+
+        const syncedAlerts: ThreatAlert[] = (data.threats ?? []).map((threat) => ({
+          id: `threat-${threat.user_id}`,
+          timestamp: Date.now(),
+          userId: threat.user_id,
+          userName: threat.user_name,
+          severity: 'HIGH',
+          description: `${threat.deny_count} denied requests in the last minute`,
+        }));
+
+        setLogs(syncedLogs);
+        setAlerts(syncedAlerts);
+      } catch (error) {
+        console.error('Failed to sync admin stats', error);
+      }
+    };
+
+    loadAdminStats();
+    const timer = setInterval(loadAdminStats, 3000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated, currentUser, authFetch]);
 
   if (!isAuthenticated || !currentUser) {
     return <LoginScreen onLogin={handleLogin} />;
