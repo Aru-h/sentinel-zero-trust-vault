@@ -9,12 +9,6 @@ SECRET_KEY=<run: python -c "import secrets; print(secrets.token_hex(32))">
 # Set to 'production' to enforce HTTPS cookies and disable dev defaults
 FLASK_ENV=development
 
-# User passwords — required in production, defaults used in dev if absent
-ADMIN_PASSWORD=<strong-password>
-HR_PASSWORD=<strong-password>
-DEV_PASSWORD=<strong-password>
-FIN_PASSWORD=<strong-password>
-
 # Allowed frontend origins (comma-separated)
 CORS_ORIGINS=http://localhost:5173
 

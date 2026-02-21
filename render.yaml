@@ -35,16 +35,6 @@ services:
       - key: DB_PATH
         value: /data/sentinel.db     # Points to the persistent disk
 
-      # Passwords — set these manually in the Render dashboard after deploy
-      # Never commit real values here.
-      - key: ADMIN_PASSWORD
-        sync: false                  # Marks as secret; Render will prompt you
-      - key: HR_PASSWORD
-        sync: false
-      - key: DEV_PASSWORD
-        sync: false
-      - key: FIN_PASSWORD
-        sync: false
 
       # Set this AFTER the frontend is deployed (copy its onrender.com URL)
       - key: CORS_ORIGINS

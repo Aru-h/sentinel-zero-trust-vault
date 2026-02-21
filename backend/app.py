@@ -87,21 +87,15 @@ def check_rate_limit(ip: str, limit: int = 5, window: int = 60) -> bool:
     return True
 
 # ------------------------------------------------------------------ #
-#  Auth DB — from env vars; no hardcoded credentials                  #
+#  Auth DB — hardcoded demo credentials                               #
 # ------------------------------------------------------------------ #
 def _build_auth_db() -> dict:
     raw = {
-        "admin1": {"pass": os.environ.get("ADMIN_PASSWORD", ""), "role": "Admin",     "id": "u1", "name": "Alice Admin"},
-        "hr1":    {"pass": os.environ.get("HR_PASSWORD",    ""), "role": "HR",        "id": "u3", "name": "Charlie HR"},
-        "dev1":   {"pass": os.environ.get("DEV_PASSWORD",   ""), "role": "Developer", "id": "u2", "name": "Bob Dev"},
-        "fin1":   {"pass": os.environ.get("FIN_PASSWORD",   ""), "role": "Finance",   "id": "u4", "name": "Dana Finance"},
+        "admin1": {"pass": "Admin@123", "role": "Admin",     "id": "u1", "name": "Alice Admin"},
+        "hr1":    {"pass": "HR@123",    "role": "HR",        "id": "u3", "name": "Charlie HR"},
+        "dev1":   {"pass": "Dev@123",   "role": "Developer", "id": "u2", "name": "Bob Dev"},
+        "fin1":   {"pass": "Fin@123",   "role": "Finance",   "id": "u4", "name": "Dana Finance"},
     }
-    _dev_defaults = {"admin1": "Admin@123", "hr1": "HR@123", "dev1": "Dev@123", "fin1": "Fin@123"}
-    for uname, default_pw in _dev_defaults.items():
-        if not raw[uname]["pass"]:
-            if _is_prod:
-                raise RuntimeError(f"Missing password env var for '{uname}' in production.")
-            raw[uname]["pass"] = default_pw
 
     return {
         username: {
