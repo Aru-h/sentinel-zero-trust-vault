@@ -13,9 +13,9 @@ Make sure your repository has this structure:
 ```
 your-repo/
 ├── render.yaml              ← Render Blueprint config
-├── vite.config.ts
-├── package.json
-├── src/
+├── frontend/
+│   ├── vite.config.ts
+│   ├── package.json
 │   └── constants.ts         ← uses import.meta.env.VITE_API_URL
 └── backend/
     ├── app.py
@@ -107,14 +107,16 @@ Open `https://sentinel-frontend.onrender.com` and log in with:
 
 ```bash
 # Create frontend env file
+cd frontend
 echo "VITE_API_URL=http://localhost:5001" > .env.local
 
 # Backend
-cd backend
+cd ../backend
 export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 python app.py
 
 # Frontend (separate terminal)
+cd frontend
 npm install && npm run dev
 ```
 

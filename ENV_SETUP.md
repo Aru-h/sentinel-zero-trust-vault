@@ -22,7 +22,7 @@ CORS_ORIGINS=http://localhost:5173
 FLASK_DEBUG=false
 ```
 
-## Frontend (.env.local)
+## Frontend (`frontend/.env.local`)
 
 ```bash
 # Backend API URL — no trailing slash
@@ -41,6 +41,7 @@ export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 python app.py
 
 # Terminal 2 — frontend
+cd frontend
 echo "VITE_API_URL=http://localhost:5001" > .env.local
 npm install
 npm run dev

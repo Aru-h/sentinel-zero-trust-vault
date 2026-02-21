@@ -4,14 +4,27 @@
 
 # Sentinel Zero Trust Vault
 
-This contains everything you need to run your app locally.
+This repository is split into separate applications:
 
-## Run Locally
+- `frontend/` — Vite + React app
+- `backend/` — Flask API
 
-**Prerequisites:**  Node.js
+## Run locally
 
+### Frontend
 
-1. Install dependencies:
-   `npm install`
-2. Run the app:
-   `npm run dev`
+**Prerequisites:** Node.js
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Backend
+
+```bash
+cd backend
+export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+python app.py
+```
