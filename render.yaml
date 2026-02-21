@@ -48,7 +48,7 @@ services:
 
       # Set this AFTER the frontend is deployed (copy its onrender.com URL)
       - key: CORS_ORIGINS
-        value: https://sentinel-frontend.onrender.com,https://sentinel-zero-trust-vault.vercel.app
+        value: https://sentinel-zero-trust-vault.vercel.app
 
   # ── FRONTEND (Vite / React Static Site) ──────────────────────────
   - type: web

@@ -1,8 +1,8 @@
 # Deploying Sentinel Zero Trust to Render
 
 ## What you get
-- **sentinel-backend** — Flask API on `https://sentinel-backend.onrender.com`
-- **sentinel-frontend** — React static site on `https://sentinel-frontend.onrender.com`
+- **sentinel-backend** — Flask API on `https://sentinel-zero-trust-vault.onrender.com`
+- **sentinel-frontend** — React static site on `https://sentinel-zero-trust-vault.vercel.app`
 
 ---
 
@@ -80,7 +80,7 @@ After both services finish deploying:
 1. Go to your **sentinel-backend** service → **Environment**
 2. Update `CORS_ORIGINS` to your actual frontend URL:
    ```
-   https://sentinel-frontend.onrender.com
+   https://sentinel-zero-trust-vault.vercel.app
    ```
 3. Click **Save Changes** — backend redeploys automatically
 
@@ -90,7 +90,7 @@ After both services finish deploying:
 
 ## Step 5 — Test it
 
-Open `https://sentinel-frontend.onrender.com` and log in with:
+Open `https://sentinel-zero-trust-vault.vercel.app` and log in with:
 
 | Username | Password (whatever you set) |
 |----------|-----------------------------|

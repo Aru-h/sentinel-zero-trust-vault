@@ -4,8 +4,8 @@ Sentinel Zero Trust Backend — Production (Render)
 Changes for Render deployment:
   - DB_PATH read from env var (points to persistent disk at /data/sentinel.db)
   - SESSION_COOKIE_SAMESITE='None' + SECURE=True — required for cross-origin
-    cookies when frontend (sentinel-frontend.onrender.com) and backend
-    (sentinel-backend.onrender.com) are on different subdomains.
+    cookies when frontend (sentinel-zero-trust-vault.vercel.app) and backend
+    (sentinel-zero-trust-vault.onrender.com) are on different domains.
     SameSite=Lax silently drops cookies on cross-origin POST requests.
   - Gunicorn-compatible: no app.run() block needed, but kept for local dev
   - init_db() called at module level so Gunicorn workers initialize the DB
@@ -59,7 +59,7 @@ _allowed_origins = [
     o.strip()
     for o in os.environ.get(
         'CORS_ORIGINS',
-        'http://localhost:5173,http://127.0.0.1:5173,https://sentinel-zero-trust-vault.vercel.app,https://sentinel-frontend.onrender.com'
+        'http://localhost:5173,http://127.0.0.1:5173,https://sentinel-zero-trust-vault.vercel.app'
     ).split(',')
     if o.strip()
 ]
