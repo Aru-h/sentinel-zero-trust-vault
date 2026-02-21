@@ -28,3 +28,22 @@ cd backend
 export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 python app.py
 ```
+
+## Save changes to GitHub
+
+Yes — you can edit files in this repo and save them to GitHub with:
+
+```bash
+git add .
+git commit -m "Describe your change"
+git push
+```
+
+If this is your first push from a new local clone, set the remote once:
+
+```bash
+git remote add origin https://github.com/<your-username>/<your-repo>.git
+git branch -M main
+git push -u origin main
+```
+
