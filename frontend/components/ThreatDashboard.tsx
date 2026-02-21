@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AccessLog, ThreatAlert, User } from '../types';
+import { API_URL } from '../constants';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend
@@ -9,10 +10,32 @@ interface ThreatDashboardProps {
   logs: AccessLog[];
   alerts: ThreatAlert[];
   currentUser: User;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  onBlocked: () => Promise<void>;
 }
 
-export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser }) => {
+interface LiveStatsResponse {
+  allowed: number;
+  denied: number;
+  rejected: number;
+}
+
+interface AccessRequestItem {
+  id: string;
+  userId: string;
+  userName: string;
+  documentId: string;
+  documentTitle: string;
+  timestamp: number;
+  status: 'PENDING' | 'APPROVED';
+}
+
+export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked }) => {
   const [analysis, setAnalysis] = useState('Initializing threat rule engine...');
+  const [roleFilter, setRoleFilter] = useState<'All' | 'Developer' | 'HR' | 'Finance' | 'Admin'>('All');
+  const [adminTab, setAdminTab] = useState<'events' | 'requests'>('events');
+  const [liveStats, setLiveStats] = useState<LiveStatsResponse>({ allowed: 0, denied: 0, rejected: 0 });
+  const [requests, setRequests] = useState<AccessRequestItem[]>([]);
 
   useEffect(() => {
     // Pure rule-based analysis — no external AI/API dependency
@@ -42,6 +65,74 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
 
   const allowedCount = logs.filter(l => l.result === 'ALLOWED').length;
   const deniedCount  = logs.filter(l => l.result === 'DENIED').length;
+  const filteredLogs = logs.filter((log) => roleFilter === 'All' || log.userRole === roleFilter);
+
+  useEffect(() => {
+    const fetchLiveStats = async () => {
+      const res = await authFetch(`${API_URL}/api/admin/live-stats`);
+      if (res.status === 403) {
+        const data = await res.json();
+        if (data?.error === 'User blocked by admin') {
+          await onBlocked();
+        }
+        return;
+      }
+      if (!res.ok) return;
+      const data: LiveStatsResponse = await res.json();
+      setLiveStats(data);
+    };
+
+    fetchLiveStats();
+    const timer = setInterval(fetchLiveStats, 1000);
+    return () => clearInterval(timer);
+  }, [authFetch, onBlocked]);
+
+  useEffect(() => {
+    const fetchRequests = async () => {
+      const res = await authFetch(`${API_URL}/api/admin/requests`);
+      if (res.status === 403) {
+        const data = await res.json();
+        if (data?.error === 'User blocked by admin') {
+          await onBlocked();
+        }
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      setRequests(data.requests ?? []);
+    };
+
+    if (adminTab === 'requests') {
+      fetchRequests();
+      const timer = setInterval(fetchRequests, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [adminTab, authFetch, onBlocked]);
+
+  const handleApproveRequest = async (requestId: string) => {
+    const res = await authFetch(`${API_URL}/api/admin/approve-request`, {
+      method: 'POST',
+      body: JSON.stringify({ requestId }),
+    });
+    if (res.status === 403) {
+      const data = await res.json();
+      if (data?.error === 'User blocked by admin') {
+        await onBlocked();
+      }
+      return;
+    }
+    if (!res.ok) return;
+    setRequests(prev => prev.filter(r => r.id !== requestId));
+  };
+
+  const handleBlockUser = async (userId: string) => {
+    const res = await authFetch(`${API_URL}/api/admin/block-user`, {
+      method: 'POST',
+      body: JSON.stringify({ userId }),
+    });
+    if (!res.ok) return;
+    setRequests(prev => prev.filter(r => r.userId !== userId));
+  };
 
   const pieData = [
     { name: 'Allowed', value: allowedCount, color: '#10b981' },
@@ -61,23 +152,17 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
     <div className="space-y-6">
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Requests',   value: logs.length,   color: 'text-white' },
-          { label: 'Denied',           value: deniedCount,   color: 'text-danger' },
-          { label: 'Active Threats',   value: alerts.length, color: 'text-warning' },
+          {[
+          { label: 'Allowed',          value: liveStats.allowed,  color: 'text-accent' },
+          { label: 'Denied',           value: liveStats.denied,   color: 'text-danger' },
+          { label: 'Rejected',         value: liveStats.rejected, color: 'text-warning' },
+          { label: 'Active Threats',   value: alerts.length,      color: 'text-warning' },
         ].map(stat => (
           <div key={stat.label} className="bg-surface p-4 rounded-lg border border-gray-700">
             <h3 className="text-gray-400 text-xs font-mono uppercase">{stat.label}</h3>
             <p className={`text-2xl font-bold mt-1 ${stat.color}`}>{stat.value}</p>
           </div>
         ))}
-        <div className="bg-surface p-4 rounded-lg border border-gray-700">
-          <h3 className="text-gray-400 text-xs font-mono uppercase">System Status</h3>
-          <div className="flex items-center gap-2 mt-1">
-            <div className={`w-3 h-3 rounded-full ${alerts.length > 0 ? 'bg-danger animate-pulse' : 'bg-accent'}`} />
-            <p className="text-sm font-bold text-white">{alerts.length > 0 ? 'ELEVATED RISK' : 'SECURE'}</p>
-          </div>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -145,19 +230,40 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
       {/* Log Table */}
       <div className="bg-surface rounded-lg border border-gray-700 overflow-hidden">
         <div className="p-4 border-b border-gray-700">
-          <h3 className="text-gray-300 font-bold text-sm">Recent Access Events</h3>
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-gray-300 font-bold text-sm">Recent Access Events</h3>
+            <div className="flex items-center gap-2">
+              <button className={`px-3 py-1 rounded text-xs ${adminTab === 'events' ? 'bg-primary text-white' : 'bg-black/30 text-gray-300'}`} onClick={() => setAdminTab('events')}>Events</button>
+              <button className={`px-3 py-1 rounded text-xs ${adminTab === 'requests' ? 'bg-primary text-white' : 'bg-black/30 text-gray-300'}`} onClick={() => setAdminTab('requests')}>Access Requests</button>
+            </div>
+          </div>
         </div>
-        <div className="overflow-x-auto">
+        {adminTab === 'events' && (
+        <>
+        <div className="p-4 border-b border-gray-700">
+          <select
+            className="bg-black/30 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200"
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value as 'All' | 'Developer' | 'HR' | 'Finance' | 'Admin')}
+          >
+            <option value="All">All</option>
+            <option value="Developer">Developer</option>
+            <option value="HR">HR</option>
+            <option value="Finance">Finance</option>
+            <option value="Admin">Admin</option>
+          </select>
+        </div>
+        <div className="overflow-x-auto max-h-96 overflow-y-auto">
           <table className="w-full text-xs">
             <thead className="bg-black/20">
               <tr>
-                {['Time', 'User', 'Role', 'Document', 'Result', 'Reason'].map(h => (
+                {['Time', 'User', 'Role', 'Document', 'Result', 'Reason', 'Actions'].map(h => (
                   <th key={h} className="text-left px-4 py-2 text-gray-500 font-mono uppercase">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {logs.slice(0, 20).map(log => (
+              {filteredLogs.slice(0, 20).map(log => (
                 <tr key={log.id} className="border-t border-gray-800 hover:bg-white/5">
                   <td className="px-4 py-2 text-gray-400">{new Date(log.timestamp).toLocaleTimeString()}</td>
                   <td className="px-4 py-2 text-white">{log.userName}</td>
@@ -165,14 +271,49 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
                   <td className="px-4 py-2 text-gray-300">{log.documentTitle}</td>
                   <td className={`px-4 py-2 font-bold ${log.result === 'ALLOWED' ? 'text-accent' : 'text-danger'}`}>{log.result}</td>
                   <td className="px-4 py-2 text-gray-500">{log.reason}</td>
+                  {currentUser.role === 'Admin' && (
+                    <td className="px-4 py-2">
+                      <button className="bg-danger/20 text-danger px-2 py-1 rounded" onClick={() => handleBlockUser(log.userId)}>Block User</button>
+                    </td>
+                  )}
                 </tr>
               ))}
-              {logs.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-600">No events yet.</td></tr>
+              {filteredLogs.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600">No events yet.</td></tr>
               )}
             </tbody>
           </table>
         </div>
+        </>
+        )}
+
+        {adminTab === 'requests' && (
+          <div className="overflow-x-auto max-h-96 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-black/20">
+                <tr>
+                  {['User', 'Document', 'Timestamp', 'Status', 'Actions'].map(h => (
+                    <th key={h} className="text-left px-4 py-2 text-gray-500 font-mono uppercase">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {requests.map((item) => (
+                  <tr key={item.id} className="border-t border-gray-800 hover:bg-white/5">
+                    <td className="px-4 py-2 text-white">{item.userName}</td>
+                    <td className="px-4 py-2 text-gray-300">{item.documentTitle} ({item.documentId})</td>
+                    <td className="px-4 py-2 text-gray-400">{new Date(item.timestamp * 1000).toLocaleString()}</td>
+                    <td className="px-4 py-2 text-warning font-bold">{item.status}</td>
+                    <td className="px-4 py-2"><button className="bg-primary text-white px-2 py-1 rounded" onClick={() => handleApproveRequest(item.id)}>Approve</button></td>
+                  </tr>
+                ))}
+                {requests.length === 0 && (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-600">No pending requests.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -65,6 +65,12 @@ CORS(app, supports_credentials=True, origins=_allowed_origins)
 # ------------------------------------------------------------------ #
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'sentinel.db'))
 SESSION_TIMEOUT = 15 * 60
+BLOCKED_USERS: set[str] = set()
+ACTIVE_SESSIONS: dict[str, str] = {}
+ACCESS_EVENTS: list[dict] = []
+ACCESS_REQUESTS: list[dict] = []
+TEMP_ACCESS: dict[tuple[str, str], float] = {}
+REQUEST_RATE_TRACKER: dict[str, list[float]] = {}
 
 # ------------------------------------------------------------------ #
 #  Rate Limiter (sliding window, in-memory per worker)                #
@@ -165,6 +171,12 @@ def init_db():
     print(f"[Sentinel] DB initialized at {DB_PATH}")
 
 def log_access_event(user_id, user_name, user_role, doc_id, doc_title, result, reason):
+    ACCESS_EVENTS.append({
+        'timestamp': time.time(),
+        'user_id': user_id,
+        'doc_id': doc_id,
+        'result': result,
+    })
     try:
         conn = get_db()
         conn.execute(
@@ -233,7 +245,13 @@ def extract_identity():
         return
     if 'user_id' in session:
         now = time.time()
+        expected_session_id = ACTIVE_SESSIONS.get(session['user_id'])
+        if not expected_session_id or expected_session_id != session.get('session_id'):
+            session.clear()
+            g.user_id = None
+            return
         if now - session.get('last_active', now) > SESSION_TIMEOUT:
+            ACTIVE_SESSIONS.pop(session['user_id'], None)
             session.clear()
             g.user_id = None
             return
@@ -252,6 +270,10 @@ def extract_identity():
 def get_current_user():
     if not g.user_id:
         return jsonify({'authenticated': False}), 401
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
     if 'csrf_token' not in session:
         session['csrf_token'] = secrets.token_hex(32)
     return jsonify({
@@ -280,12 +302,15 @@ def login():
         ok       = check_password_hash(user['hash'] if user else _DUMMY_HASH, password_input)
 
         if user and ok:
+            session_id = secrets.token_hex(16)
             session.clear()
             session.update({
                 'user_id': user['id'], 'user_name': user['name'],
                 'user_role': user['role'], 'last_active': time.time(),
                 'csrf_token': secrets.token_hex(32),
+                'session_id': session_id,
             })
+            ACTIVE_SESSIONS[user['id']] = session_id
             if request.is_json:
                 return jsonify({
                     'success': True,
@@ -302,6 +327,8 @@ def login():
 
 @app.route('/logout', methods=['GET', 'POST'])
 def logout():
+    if session.get('user_id'):
+        ACTIVE_SESSIONS.pop(session['user_id'], None)
     session.clear()
     return jsonify({'success': True}) if request.is_json else redirect(url_for('login'))
 
@@ -314,9 +341,13 @@ def dashboard_view():
                            user_role=session.get('user_role'))
 
 @app.route('/api/access', methods=['POST'])
-def request_access():
+def access_document():
     if not g.user_id:
         return jsonify({'error': 'Unauthorized'}), 401
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
 
     data   = request.get_json(silent=True) or {}
     doc_id = data.get('documentId', '')
@@ -326,6 +357,13 @@ def request_access():
 
     doc            = DOCUMENTS[doc_id]
     allowed, reason = check_policy_engine(g.user_role, doc)
+    temp_key = (g.user_id, doc_id)
+    temp_expiry = TEMP_ACCESS.get(temp_key)
+    if (not allowed) and temp_expiry and temp_expiry > time.time():
+        allowed = True
+        reason = 'Temporary access approved by admin'
+    elif temp_expiry and temp_expiry <= time.time():
+        TEMP_ACCESS.pop(temp_key, None)
     result         = 'ALLOWED' if allowed else 'DENIED'
 
     log_access_event(g.user_id, g.user_name, g.user_role, doc_id, doc['title'], result, reason)
@@ -336,6 +374,95 @@ def request_access():
         'threat_detected': is_threat,
         'document': doc if allowed else None
     })
+
+
+@app.route('/api/request-access', methods=['POST'])
+def request_temporary_access():
+    if not g.user_id:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
+
+    data = request.get_json(silent=True) or {}
+    doc_id = data.get('documentId', '')
+    if not isinstance(doc_id, str) or doc_id not in _VALID_DOC_IDS:
+        return jsonify({'error': 'Document not found'}), 404
+
+    now = time.time()
+    REQUEST_RATE_TRACKER.setdefault(g.user_id, [])
+    REQUEST_RATE_TRACKER[g.user_id] = [t for t in REQUEST_RATE_TRACKER[g.user_id] if now - t < 3600]
+    if len(REQUEST_RATE_TRACKER[g.user_id]) >= 5:
+        return jsonify({'error': 'Request limit exceeded'}), 429
+
+    REQUEST_RATE_TRACKER[g.user_id].append(now)
+    ACCESS_REQUESTS.append({
+        'id': secrets.token_hex(8),
+        'userId': g.user_id,
+        'userName': g.user_name,
+        'documentId': doc_id,
+        'documentTitle': DOCUMENTS[doc_id]['title'],
+        'timestamp': now,
+        'status': 'PENDING'
+    })
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/block-user', methods=['POST'])
+def block_user():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('userId', '')
+    if not isinstance(user_id, str) or not user_id:
+        return jsonify({'error': 'Invalid userId'}), 400
+
+    BLOCKED_USERS.add(user_id)
+    ACTIVE_SESSIONS.pop(user_id, None)
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/live-stats', methods=['GET'])
+def live_stats():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    allowed = sum(1 for e in ACCESS_EVENTS if e['result'] == 'ALLOWED')
+    denied = sum(1 for e in ACCESS_EVENTS if e['result'] == 'DENIED')
+    rejected = sum(1 for e in ACCESS_EVENTS if e['result'] == 'REJECTED')
+
+    return jsonify({'allowed': allowed, 'denied': denied, 'rejected': rejected})
+
+
+@app.route('/api/admin/requests', methods=['GET'])
+def admin_pending_requests():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    pending = [r for r in ACCESS_REQUESTS if r['status'] == 'PENDING']
+    return jsonify({'requests': pending})
+
+
+@app.route('/api/admin/approve-request', methods=['POST'])
+def approve_request():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    data = request.get_json(silent=True) or {}
+    request_id = data.get('requestId', '')
+    if not isinstance(request_id, str) or not request_id:
+        return jsonify({'error': 'Invalid requestId'}), 400
+
+    target_request = next((r for r in ACCESS_REQUESTS if r['id'] == request_id), None)
+    if not target_request:
+        return jsonify({'error': 'Request not found'}), 404
+
+    target_request['status'] = 'APPROVED'
+    TEMP_ACCESS[(target_request['userId'], target_request['documentId'])] = time.time() + 600
+    return jsonify({'success': True})
 
 @app.route('/api/admin/stats', methods=['GET'])
 def get_admin_stats():

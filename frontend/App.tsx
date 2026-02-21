@@ -29,6 +29,10 @@ interface AdminStatsResponse {
   threats?: BackendThreat[];
 }
 
+interface RequestAccessResponse {
+  error?: string;
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser]         = useState<User | null>(null);
@@ -71,6 +75,11 @@ function App() {
             avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
           });
           setIsAuthenticated(true);
+        } else if (res.status === 403) {
+          const data = await res.json();
+          if (data?.error === 'User blocked by admin') {
+            await handleLogout();
+          }
         }
       } catch {
         // Not authenticated — render login screen
@@ -102,6 +111,13 @@ function App() {
       });
 
       if (res.status === 401) { handleLogout(); return; }
+      if (res.status === 403) {
+        const data = await res.json();
+        if (data?.error === 'User blocked by admin') {
+          await handleLogout();
+        }
+        return;
+      }
 
       const data = await res.json();
 
@@ -141,6 +157,23 @@ function App() {
 
     } catch (e) {
       console.error('Access request failed', e);
+    }
+  };
+
+  const handleRequestAccess = async (documentId: string) => {
+    try {
+      const res = await authFetch(`${API_URL}/api/request-access`, {
+        method: 'POST',
+        body: JSON.stringify({ documentId }),
+      });
+      if (res.status === 403) {
+        const data: RequestAccessResponse = await res.json();
+        if (data.error === 'User blocked by admin') {
+          await handleLogout();
+        }
+      }
+    } catch (error) {
+      console.error('Failed to request temporary access', error);
     }
   };
 
@@ -315,12 +348,12 @@ function App() {
           )}
 
           {activeTab === 'admin' && (
-            <ThreatDashboard logs={logs} alerts={alerts} currentUser={currentUser} />
+            <ThreatDashboard logs={logs} alerts={alerts} currentUser={currentUser} authFetch={authFetch} onBlocked={handleLogout} />
           )}
         </div>
       </main>
 
-      <AccessDenyModal log={deniedLog} onClose={() => setDeniedLog(null)} />
+      <AccessDenyModal log={deniedLog} onClose={() => setDeniedLog(null)} onRequestAccess={handleRequestAccess} />
       {openDocument && (
         <DocumentReader document={openDocument} user={currentUser} onClose={() => setOpenDocument(null)} />
       )}
