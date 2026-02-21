@@ -4,9 +4,10 @@ import { AccessLog } from '../types';
 interface AccessDenyModalProps {
   log: AccessLog | null;
   onClose: () => void;
+  onRequestAccess: (documentId: string) => void;
 }
 
-export const AccessDenyModal: React.FC<AccessDenyModalProps> = ({ log, onClose }) => {
+export const AccessDenyModal: React.FC<AccessDenyModalProps> = ({ log, onClose, onRequestAccess }) => {
   if (!log) return null;
 
   return (
@@ -50,6 +51,12 @@ export const AccessDenyModal: React.FC<AccessDenyModalProps> = ({ log, onClose }
             className="w-full bg-danger hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition-colors"
           >
             ACKNOWLEDGE
+          </button>
+          <button
+            onClick={() => onRequestAccess(log.documentId)}
+            className="w-full bg-primary hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition-colors"
+          >
+            REQUEST TEMP ACCESS
           </button>
         </div>
       </div>
