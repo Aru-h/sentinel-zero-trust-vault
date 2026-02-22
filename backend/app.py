@@ -51,6 +51,11 @@ ACCESS_REQUESTS: list[dict] = []
 TEMP_APPROVALS: dict[str, dict] = {}
 REQUEST_RATE_TRACKER: dict[str, list[float]] = {}
 USER_RISK: dict[str, dict] = {}
+LOCAL_AI_AGENT = {
+    'enabled': False,
+    'max_clearance_gap': 1,
+    'max_hourly_requests': 3,
+}
 
 
 def _load_encryption_key() -> bytes:
@@ -111,6 +116,10 @@ def _build_auth_db() -> dict:
 
 AUTH_DB = _build_auth_db()
 _DUMMY_HASH = generate_password_hash('__sentinel_canary__', method='pbkdf2:sha256')
+
+
+def get_user_by_id(user_id: str):
+    return next((user for user in AUTH_DB.values() if user['id'] == user_id), None)
 
 DOCUMENTS = {
     'd1': {'title': 'Company Handbook', 'classification': 'Public', 'department': 'General', 'required_clearance': 1, 'content': 'Company handbook and onboarding standards.'},
@@ -264,6 +273,64 @@ def log_access_event(user_id, user_name, user_role, doc_id, doc_title, result, r
         conn.close()
     except Exception as e:
         print(f'[Sentinel] Log error: {e}')
+
+
+def _approve_access_request(target_request: dict, reason: str, expires_in: int = 600):
+    target_request['status'] = 'APPROVED'
+    token = secrets.token_urlsafe(32)
+    expiry = time.time() + expires_in
+    user = get_user_by_id(target_request['userId']) or {}
+    TEMP_APPROVALS[token] = {
+        'user': target_request['userId'],
+        'user_name': target_request['userName'],
+        'user_role': user.get('role', 'Unknown'),
+        'document_id': target_request['documentId'],
+        'document_title': target_request['documentTitle'],
+        'expires_at': expiry,
+    }
+    log_access_event(
+        target_request['userId'],
+        target_request['userName'],
+        TEMP_APPROVALS[token]['user_role'],
+        target_request['documentId'],
+        target_request['documentTitle'],
+        'ALLOWED',
+        reason,
+    )
+    return {'token': token, 'expiresAt': expiry}
+
+
+def process_local_ai_approvals() -> int:
+    if not LOCAL_AI_AGENT['enabled']:
+        return 0
+
+    auto_approved = 0
+    now = time.time()
+
+    for pending in ACCESS_REQUESTS:
+        if pending['status'] != 'PENDING':
+            continue
+
+        user = get_user_by_id(pending['userId'])
+        doc = DOCUMENTS.get(pending['documentId'])
+        if not user or not doc:
+            continue
+
+        clearance_gap = doc['required_clearance'] - user['clearance_level']
+        recent_requests = [
+            t for t in REQUEST_RATE_TRACKER.get(pending['userId'], [])
+            if now - t < 3600
+        ]
+
+        if (
+            clearance_gap <= LOCAL_AI_AGENT['max_clearance_gap']
+            and len(recent_requests) <= LOCAL_AI_AGENT['max_hourly_requests']
+            and pending['userId'] not in BLOCKED_USERS
+        ):
+            _approve_access_request(pending, 'local_ai_auto_approval')
+            auto_approved += 1
+
+    return auto_approved
 
 
 def _risk_reset_if_inactive(username: str):
@@ -577,6 +644,8 @@ def request_temporary_access():
         'status': 'PENDING'
     })
 
+    process_local_ai_approvals()
+
     return jsonify({'success': True})
 
 
@@ -612,6 +681,7 @@ def admin_pending_requests():
     if not g.user_id or g.user_role != 'Admin':
         return jsonify({'error': 'Forbidden'}), 403
 
+    process_local_ai_approvals()
     pending = [r for r in ACCESS_REQUESTS if r['status'] == 'PENDING']
     return jsonify({'requests': pending})
 
@@ -631,19 +701,32 @@ def approve_request():
     if not target_request:
         return jsonify({'error': 'Request not found'}), 404
 
-    target_request['status'] = 'APPROVED'
-    token = secrets.token_urlsafe(32)
-    expiry = time.time() + (expires_in if isinstance(expires_in, int) and expires_in > 0 else 600)
-    TEMP_APPROVALS[token] = {
-        'user': target_request['userId'],
-        'user_name': target_request['userName'],
-        'user_role': next((u['role'] for u in AUTH_DB.values() if u['id'] == target_request['userId']), 'Unknown'),
-        'document_id': target_request['documentId'],
-        'document_title': target_request['documentTitle'],
-        'expires_at': expiry,
-    }
-    log_access_event(target_request['userId'], target_request['userName'], TEMP_APPROVALS[token]['user_role'], target_request['documentId'], target_request['documentTitle'], 'ALLOWED', 'token_created')
-    return jsonify({'success': True, 'token': token, 'expiresAt': expiry})
+    ttl = expires_in if isinstance(expires_in, int) and expires_in > 0 else 600
+    approved = _approve_access_request(target_request, 'token_created', ttl)
+    return jsonify({'success': True, **approved})
+
+
+@app.route('/api/admin/ai-agent', methods=['GET', 'POST'])
+def admin_ai_agent_settings():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        enabled = data.get('enabled')
+        if isinstance(enabled, bool):
+            LOCAL_AI_AGENT['enabled'] = enabled
+
+        if isinstance(data.get('max_clearance_gap'), int):
+            LOCAL_AI_AGENT['max_clearance_gap'] = max(0, min(2, data['max_clearance_gap']))
+
+        if isinstance(data.get('max_hourly_requests'), int):
+            LOCAL_AI_AGENT['max_hourly_requests'] = max(1, min(10, data['max_hourly_requests']))
+
+        auto_approved = process_local_ai_approvals()
+        return jsonify({'success': True, 'settings': LOCAL_AI_AGENT, 'autoApproved': auto_approved})
+
+    return jsonify({'settings': LOCAL_AI_AGENT})
 
 
 @app.route('/api/admin/stats', methods=['GET'])

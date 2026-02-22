@@ -30,12 +30,23 @@ interface AccessRequestItem {
   status: 'PENDING' | 'APPROVED';
 }
 
+interface AIAgentSettings {
+  enabled: boolean;
+  max_clearance_gap: number;
+  max_hourly_requests: number;
+}
+
 export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked }) => {
   const [analysis, setAnalysis] = useState('Initializing threat rule engine...');
   const [roleFilter, setRoleFilter] = useState<'All' | 'Developer' | 'HR' | 'Finance' | 'Admin'>('All');
   const [adminTab, setAdminTab] = useState<'events' | 'requests'>('events');
   const [liveStats, setLiveStats] = useState<LiveStatsResponse>({ allowed: 0, denied: 0, rejected: 0 });
   const [requests, setRequests] = useState<AccessRequestItem[]>([]);
+  const [aiAgent, setAiAgent] = useState<AIAgentSettings>({
+    enabled: false,
+    max_clearance_gap: 1,
+    max_hourly_requests: 3,
+  });
 
   useEffect(() => {
     // Pure rule-based analysis — no external AI/API dependency
@@ -86,6 +97,29 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
     const timer = setInterval(fetchLiveStats, 1000);
     return () => clearInterval(timer);
   }, [authFetch, onBlocked]);
+
+  useEffect(() => {
+    const loadAIAgent = async () => {
+      const res = await authFetch(`${API_URL}/api/admin/ai-agent`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.settings) setAiAgent(data.settings);
+    };
+
+    loadAIAgent();
+  }, [authFetch]);
+
+  const saveAIAgent = async (next: Partial<AIAgentSettings>) => {
+    const payload = { ...aiAgent, ...next };
+    setAiAgent(payload);
+    const res = await authFetch(`${API_URL}/api/admin/ai-agent`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data?.settings) setAiAgent(data.settings);
+  };
 
   useEffect(() => {
     const fetchRequests = async () => {
@@ -163,6 +197,43 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
             <p className={`text-2xl font-bold mt-1 ${stat.color}`}>{stat.value}</p>
           </div>
         ))}
+      </div>
+
+      <div className="bg-surface p-4 rounded-lg border border-gray-700 space-y-3">
+        <h3 className="text-gray-300 font-bold text-sm">Local AI Auto-Approval Agent</h3>
+        <p className="text-xs text-gray-400">Runs fully on the backend server and auto-approves low-risk access requests.</p>
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <label className="flex items-center gap-2 text-gray-300">
+            <input
+              type="checkbox"
+              checked={aiAgent.enabled}
+              onChange={(e) => saveAIAgent({ enabled: e.target.checked })}
+            />
+            Enabled
+          </label>
+          <label className="flex items-center gap-2 text-gray-300">
+            Max clearance gap
+            <input
+              type="number"
+              min={0}
+              max={2}
+              value={aiAgent.max_clearance_gap}
+              onChange={(e) => saveAIAgent({ max_clearance_gap: Number(e.target.value) || 0 })}
+              className="w-16 bg-black/30 border border-gray-700 rounded px-2 py-1"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-gray-300">
+            Max hourly requests
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={aiAgent.max_hourly_requests}
+              onChange={(e) => saveAIAgent({ max_hourly_requests: Number(e.target.value) || 1 })}
+              className="w-16 bg-black/30 border border-gray-700 rounded px-2 py-1"
+            />
+          </label>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
