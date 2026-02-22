@@ -1,14 +1,12 @@
 """
 Sentinel Zero Trust Backend — Production (Render)
 ==================================================
-Changes for Render deployment:
-  - DB_PATH read from env var (points to persistent disk at /data/sentinel.db)
-  - SESSION_COOKIE_SAMESITE='None' + SECURE=True — required for cross-origin
-    cookies when frontend (sentinel-zero-trust-vault.vercel.app) and backend
-    (sentinel-zero-trust-vault.onrender.com) are on different domains.
-    SameSite=Lax silently drops cookies on cross-origin POST requests.
-  - Gunicorn-compatible: no app.run() block needed, but kept for local dev
-  - init_db() called at module level so Gunicorn workers initialize the DB
+Security layers added incrementally:
+  - Fernet (AES-256) encryption for document content at rest (SQLite BLOB)
+  - Hybrid RBAC + clearance-level enforcement for access decisions
+  - Risk-score insider detection with auto-blocking and inactivity reset
+  - Expiring temporary access approval tokens with audit logging
+  - Existing CSRF, IP rate limiting, session controls, and Gunicorn compatibility preserved
 """
 
 import sqlite3
@@ -16,9 +14,10 @@ import time
 import os
 import hmac
 import secrets
-from functools import wraps
+from datetime import datetime
 from flask import Flask, request, jsonify, g, render_template, session, redirect, url_for, flash
 from flask_cors import CORS
+from cryptography.fernet import Fernet, InvalidToken
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -35,15 +34,11 @@ _is_prod = os.environ.get('FLASK_ENV', 'development') == 'production'
 
 # ------------------------------------------------------------------ #
 #  Cookie config                                                      #
-#  RENDER-SPECIFIC: SameSite=None is required because the frontend    #
-#  and backend are on different subdomains of onrender.com.           #
-#  SameSite=None requires Secure=True (HTTPS only).                   #
-#  Render always uses HTTPS, so this is safe.                         #
 # ------------------------------------------------------------------ #
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None' if _is_prod else 'Lax',
-    SESSION_COOKIE_SECURE=_is_prod,   # True in prod (HTTPS), False locally
+    SESSION_COOKIE_SECURE=_is_prod,
 )
 
 # ------------------------------------------------------------------ #
@@ -61,15 +56,48 @@ _allowed_origins = [
 CORS(app, supports_credentials=True, origins=_allowed_origins)
 
 # ------------------------------------------------------------------ #
-#  Database path — env var allows Render's persistent disk            #
+#  Database path / session / in-memory security stores                #
 # ------------------------------------------------------------------ #
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'sentinel.db'))
 SESSION_TIMEOUT = 15 * 60
+BLOCKED_USERS: set[str] = set()
+ACTIVE_SESSIONS: dict[str, str] = {}
+ACCESS_EVENTS: list[dict] = []
+ACCESS_REQUESTS: list[dict] = []
+TEMP_ACCESS: dict[tuple[str, str], float] = {}
+TEMP_APPROVALS: dict[str, dict] = {}
+REQUEST_RATE_TRACKER: dict[str, list[float]] = {}
+USER_RISK: dict[str, dict] = {}
+
+# ------------------------------------------------------------------ #
+#  Encryption (Fernet / AES-256)                                      #
+# ------------------------------------------------------------------ #
+_raw_encryption_key = os.environ.get('ENCRYPTION_KEY', '').strip()
+if _raw_encryption_key:
+    try:
+        _FERNET = Fernet(_raw_encryption_key.encode('utf-8'))
+    except Exception:
+        generated = Fernet.generate_key()
+        print('[Sentinel][WARN] Invalid ENCRYPTION_KEY. Generated runtime-only encryption key.')
+        _FERNET = Fernet(generated)
+else:
+    generated = Fernet.generate_key()
+    print('[Sentinel][WARN] ENCRYPTION_KEY missing. Generated runtime-only encryption key.')
+    _FERNET = Fernet(generated)
+
+
+def encrypt_document(plaintext: str) -> bytes:
+    return _FERNET.encrypt(plaintext.encode('utf-8'))
+
+
+def decrypt_document(ciphertext: bytes) -> str:
+    return _FERNET.decrypt(ciphertext).decode('utf-8')
 
 # ------------------------------------------------------------------ #
 #  Rate Limiter (sliding window, in-memory per worker)                #
 # ------------------------------------------------------------------ #
 _RATE_LIMIT_STORE: dict = {}
+
 
 def check_rate_limit(ip: str, limit: int = 5, window: int = 60) -> bool:
     now = time.time()
@@ -81,58 +109,48 @@ def check_rate_limit(ip: str, limit: int = 5, window: int = 60) -> bool:
     return True
 
 # ------------------------------------------------------------------ #
-#  Auth DB — hardcoded demo credentials                               #
+#  Auth DB — hardcoded demo credentials + clearance levels            #
 # ------------------------------------------------------------------ #
 def _build_auth_db() -> dict:
     raw = {
-        "admin1": {"pass": "Admin@123", "role": "Admin",     "id": "u1", "name": "Alice Admin"},
-        "hr1":    {"pass": "HR@123",    "role": "HR",        "id": "u3", "name": "Charlie HR"},
-        "dev1":   {"pass": "Dev@123",   "role": "Developer", "id": "u2", "name": "Bob Dev"},
-        "fin1":   {"pass": "Fin@123",   "role": "Finance",   "id": "u4", "name": "Dana Finance"},
+        "admin1": {"pass": "Admin@123", "role": "Admin", "id": "u1", "name": "Alice Admin", "clearance_level": 5},
+        "hr1":    {"pass": "HR@123",    "role": "HR", "id": "u3", "name": "Charlie HR", "clearance_level": 4},
+        "dev1":   {"pass": "Dev@123",   "role": "Developer", "id": "u2", "name": "Bob Dev", "clearance_level": 3},
+        "fin1":   {"pass": "Fin@123",   "role": "Finance", "id": "u4", "name": "Dana Finance", "clearance_level": 4},
     }
 
     return {
         username: {
             "hash": generate_password_hash(data["pass"], method="pbkdf2:sha256"),
-            "role": data["role"], "id": data["id"],
-            "name": data["name"], "username": username,
+            "role": data["role"],
+            "id": data["id"],
+            "name": data["name"],
+            "username": username,
+            "clearance_level": data["clearance_level"],
         }
         for username, data in raw.items()
     }
+
 
 AUTH_DB = _build_auth_db()
 _DUMMY_HASH = generate_password_hash("__sentinel_canary__", method="pbkdf2:sha256")
 
 # ------------------------------------------------------------------ #
-#  Document Registry                                                  #
+#  Document Registry (metadata only; content encrypted in SQLite)     #
 # ------------------------------------------------------------------ #
 DOCUMENTS = {
-    'd1':  {'title': 'Company Handbook',             'classification': 'Public',       'department': 'General'},
-    'd2':  {'title': 'Q3 Financial Report',          'classification': 'Confidential', 'department': 'Finance'},
-    'd3':  {'title': 'Employee Salaries',            'classification': 'Restricted',   'department': 'HR'},
-    'd4':  {'title': 'Project Sentinel Source Code', 'classification': 'Internal',     'department': 'Developer'},
-    'd5':  {'title': 'Admin Credentials Backup',     'classification': 'Restricted',   'department': 'Admin'},
-    'd6':  {'title': 'Office Floor Plan',            'classification': 'Internal',     'department': 'General'},
-    'd7':  {'title': 'Merger Strategy 2025',         'classification': 'Restricted',   'department': 'Finance'},
-    'd8':  {'title': 'API Documentation',            'classification': 'Public',       'department': 'Developer'},
-    'd9':  {'title': 'Termination Policy',           'classification': 'Confidential', 'department': 'HR'},
-    'd10': {'title': 'Audit Logs 2024',              'classification': 'Confidential', 'department': 'Admin'},
+    'd1':  {'title': 'Company Handbook',             'classification': 'Public',       'department': 'General',   'required_clearance': 1},
+    'd2':  {'title': 'Q3 Financial Report',          'classification': 'Confidential', 'department': 'Finance',   'required_clearance': 4},
+    'd3':  {'title': 'Employee Salaries',            'classification': 'Restricted',   'department': 'HR',        'required_clearance': 5},
+    'd4':  {'title': 'Project Sentinel Source Code', 'classification': 'Internal',     'department': 'Developer', 'required_clearance': 3},
+    'd5':  {'title': 'Admin Credentials Backup',     'classification': 'Restricted',   'department': 'Admin',     'required_clearance': 5},
+    'd6':  {'title': 'Office Floor Plan',            'classification': 'Internal',     'department': 'General',   'required_clearance': 2},
+    'd7':  {'title': 'Merger Strategy 2025',         'classification': 'Restricted',   'department': 'Finance',   'required_clearance': 5},
+    'd8':  {'title': 'API Documentation',            'classification': 'Public',       'department': 'Developer', 'required_clearance': 1},
+    'd9':  {'title': 'Termination Policy',           'classification': 'Confidential', 'department': 'HR',        'required_clearance': 4},
+    'd10': {'title': 'Audit Logs 2024',              'classification': 'Confidential', 'department': 'Admin',     'required_clearance': 5},
 }
 _VALID_DOC_IDS = frozenset(DOCUMENTS.keys())
-
-# ------------------------------------------------------------------ #
-#  Access Policy Engine                                               #
-# ------------------------------------------------------------------ #
-def check_policy_engine(role: str, doc: dict) -> tuple[bool, str]:
-    c = doc['classification']
-    d = doc['department']
-    if c == 'Public':       return True,  "Public Classification"
-    if role == 'Admin':     return True,  "Admin Override [AUDITED]"
-    same = (d == 'General') or (d == role)
-    if c == 'Internal':     return True,  "Internal Access Policy"
-    if c == 'Confidential': return (True, "Role-Based Access") if same else (False, "Department Mismatch")
-    if c == 'Restricted':   return False, "Restricted: Escalation Required"
-    return False, "Implicit Deny"
 
 # ------------------------------------------------------------------ #
 #  Database                                                           #
@@ -142,8 +160,25 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _seed_documents(conn: sqlite3.Connection):
+    for doc_id, doc in DOCUMENTS.items():
+        content = f"{doc['title']} secure content payload"
+        encrypted_content = encrypt_document(content)
+        conn.execute(
+            '''INSERT INTO documents (id, title, classification, department, required_clearance, encrypted_content)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title,
+                 classification=excluded.classification,
+                 department=excluded.department,
+                 required_clearance=excluded.required_clearance,
+                 encrypted_content=excluded.encrypted_content''',
+            (doc_id, doc['title'], doc['classification'], doc['department'], doc['required_clearance'], encrypted_content),
+        )
+
+
 def init_db():
-    # Ensure the directory exists (needed for /data on Render)
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = get_db()
     conn.execute('''
@@ -160,11 +195,39 @@ def init_db():
             is_admin_access INTEGER DEFAULT 0
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS documents (
+            id                 TEXT PRIMARY KEY,
+            title              TEXT NOT NULL,
+            classification     TEXT NOT NULL,
+            department         TEXT NOT NULL,
+            required_clearance INTEGER DEFAULT 1,
+            encrypted_content  BLOB NOT NULL
+        )
+    ''')
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+    if 'required_clearance' not in cols:
+        conn.execute('ALTER TABLE documents ADD COLUMN required_clearance INTEGER DEFAULT 1')
+
+    _seed_documents(conn)
     conn.commit()
     conn.close()
     print(f"[Sentinel] DB initialized at {DB_PATH}")
 
+
+def get_document_record(doc_id: str):
+    conn = get_db()
+    row = conn.execute(
+        'SELECT id, title, classification, department, required_clearance, encrypted_content FROM documents WHERE id=?',
+        (doc_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def log_access_event(user_id, user_name, user_role, doc_id, doc_title, result, reason):
+    ACCESS_EVENTS.append({'timestamp': time.time(), 'user_id': user_id, 'doc_id': doc_id, 'result': result})
     try:
         conn = get_db()
         conn.execute(
@@ -177,50 +240,93 @@ def log_access_event(user_id, user_name, user_role, doc_id, doc_title, result, r
     except Exception as e:
         print(f"[Sentinel] Log error: {e}")
 
-def detect_insider_threat(user_id: str) -> bool:
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "SELECT COUNT(*) FROM access_logs WHERE user_id=? AND access_result='DENIED' AND timestamp>?",
-            (user_id, time.time() - 60)
-        )
-        count = c.fetchone()[0]
-        conn.close()
-        return count >= 3
-    except Exception:
-        return False
+
+def _cleanup_expired_tokens(now_ts: float):
+    expired_tokens = [t for t, data in TEMP_APPROVALS.items() if data['expires_at'] <= now_ts]
+    for token in expired_tokens:
+        token_data = TEMP_APPROVALS.pop(token, None)
+        if token_data:
+            log_access_event(
+                token_data['user_id'], token_data['user_name'], token_data['user_role'],
+                token_data['document_id'], token_data['document_title'], 'DENIED', 'token_expired'
+            )
+
+
+def _validate_temp_approval(token: str, user_id: str, doc_id: str) -> tuple[bool, str]:
+    _cleanup_expired_tokens(time.time())
+    token_data = TEMP_APPROVALS.get(token)
+    if not token_data:
+        return False, 'invalid_approval_token'
+    if token_data['user_id'] != user_id:
+        return False, 'approval_token_user_mismatch'
+    if token_data['document_id'] != doc_id:
+        return False, 'approval_token_document_mismatch'
+    if token_data['expires_at'] <= time.time():
+        TEMP_APPROVALS.pop(token, None)
+        return False, 'token_expired'
+    return True, 'token_used'
+
+
+def _risk_entry(username: str) -> dict:
+    USER_RISK.setdefault(username, {'score': 0, 'last_activity': time.time()})
+    return USER_RISK[username]
+
+
+def _reset_risk_on_inactivity(username: str, now_ts: float):
+    entry = _risk_entry(username)
+    if now_ts - entry['last_activity'] >= 600:
+        entry['score'] = 0
+
+
+def _update_risk(username: str, user_id: str, user_name: str, role: str, denied: bool, restricted_attempt: bool) -> int:
+    now_ts = time.time()
+    _reset_risk_on_inactivity(username, now_ts)
+    entry = _risk_entry(username)
+
+    if denied:
+        entry['score'] += 2
+    if restricted_attempt:
+        entry['score'] += 3
+    hour = datetime.fromtimestamp(now_ts).hour
+    if hour < 8 or hour > 20:
+        entry['score'] += 1
+
+    entry['last_activity'] = now_ts
+
+    if entry['score'] >= 6:
+        BLOCKED_USERS.add(user_id)
+        ACTIVE_SESSIONS.pop(user_id, None)
+        log_access_event(user_id, user_name, role, 'risk-engine', 'Insider Risk Engine', 'DENIED', 'risk_auto_block')
+    return entry['score']
+
 
 def get_flagged_users():
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            """SELECT user_id, user_name, COUNT(*) as deny_count
-               FROM access_logs WHERE access_result='DENIED' AND timestamp>?
-               GROUP BY user_id HAVING deny_count >= 3""",
-            (time.time() - 60,)
-        )
-        rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        return rows
-    except Exception:
-        return []
+    flagged = []
+    now_ts = time.time()
+    for username, risk in USER_RISK.items():
+        if now_ts - risk.get('last_activity', now_ts) >= 600:
+            continue
+        if risk.get('score', 0) >= 6 and username in AUTH_DB:
+            user = AUTH_DB[username]
+            flagged.append({'user_id': user['id'], 'user_name': user['name'], 'deny_count': risk['score']})
+    return flagged
 
 # ------------------------------------------------------------------ #
 #  CSRF                                                               #
 # ------------------------------------------------------------------ #
 _CSRF_EXEMPT = frozenset({'/login', '/logout', '/api/me'})
 
+
 def _validate_csrf():
     if request.path in _CSRF_EXEMPT or request.method in ('GET', 'OPTIONS', 'HEAD'):
         return
-    client  = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token', '')
-    stored  = session.get('csrf_token', '')
+    client = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token', '')
+    stored = session.get('csrf_token', '')
     if not client or not stored:
         return jsonify({'error': 'CSRF token missing'}), 403
     if not hmac.compare_digest(client, stored):
         return jsonify({'error': 'CSRF token invalid'}), 403
+
 
 app.before_request(_validate_csrf)
 
@@ -233,32 +339,44 @@ def extract_identity():
         return
     if 'user_id' in session:
         now = time.time()
+        expected_session_id = ACTIVE_SESSIONS.get(session['user_id'])
+        if not expected_session_id or expected_session_id != session.get('session_id'):
+            session.clear()
+            g.user_id = None
+            return
         if now - session.get('last_active', now) > SESSION_TIMEOUT:
+            ACTIVE_SESSIONS.pop(session['user_id'], None)
             session.clear()
             g.user_id = None
             return
         session['last_active'] = now
-        g.user_id   = session['user_id']
+        g.user_id = session['user_id']
         g.user_name = session['user_name']
         g.user_role = session['user_role']
+        g.user_username = session.get('username')
+        g.user_clearance = session.get('clearance_level', 1)
     else:
         g.user_id = None
 
 # ------------------------------------------------------------------ #
 #  Routes                                                             #
 # ------------------------------------------------------------------ #
-
 @app.route('/api/me', methods=['GET'])
 def get_current_user():
     if not g.user_id:
         return jsonify({'authenticated': False}), 401
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
     if 'csrf_token' not in session:
         session['csrf_token'] = secrets.token_hex(32)
     return jsonify({
         'authenticated': True,
         'csrf_token': session['csrf_token'],
-        'user': {'id': g.user_id, 'name': g.user_name, 'role': g.user_role}
+        'user': {'id': g.user_id, 'name': g.user_name, 'role': g.user_role, 'clearance_level': g.user_clearance}
     })
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -276,21 +394,29 @@ def login():
             password_input = request.form.get('password', '')
 
         user_key = next((k for k in AUTH_DB if k.lower() == username_input.lower()), None)
-        user     = AUTH_DB.get(user_key)
-        ok       = check_password_hash(user['hash'] if user else _DUMMY_HASH, password_input)
+        user = AUTH_DB.get(user_key)
+        ok = check_password_hash(user['hash'] if user else _DUMMY_HASH, password_input)
 
         if user and ok:
+            session_id = secrets.token_hex(16)
             session.clear()
             session.update({
-                'user_id': user['id'], 'user_name': user['name'],
-                'user_role': user['role'], 'last_active': time.time(),
+                'user_id': user['id'],
+                'user_name': user['name'],
+                'user_role': user['role'],
+                'username': user['username'],
+                'clearance_level': user['clearance_level'],
+                'last_active': time.time(),
                 'csrf_token': secrets.token_hex(32),
+                'session_id': session_id,
             })
+            ACTIVE_SESSIONS[user['id']] = session_id
+            USER_RISK[user['username']] = {'score': 0, 'last_activity': time.time()}
             if request.is_json:
                 return jsonify({
                     'success': True,
                     'csrf_token': session['csrf_token'],
-                    'user': {k: user[k] for k in ('id', 'name', 'role')}
+                    'user': {k: user[k] for k in ('id', 'name', 'role', 'clearance_level')}
                 })
             return redirect(url_for('dashboard_view'))
 
@@ -300,42 +426,226 @@ def login():
 
     return render_template('login.html')
 
+
 @app.route('/logout', methods=['GET', 'POST'])
 def logout():
+    if session.get('user_id'):
+        ACTIVE_SESSIONS.pop(session['user_id'], None)
     session.clear()
     return jsonify({'success': True}) if request.is_json else redirect(url_for('login'))
+
 
 @app.route('/dashboard')
 def dashboard_view():
     if 'user_id' not in session or session.get('user_role') != 'Admin':
         return redirect(url_for('login'))
-    return render_template('dashboard.html',
-                           user_name=session.get('user_name'),
-                           user_role=session.get('user_role'))
+    return render_template('dashboard.html', user_name=session.get('user_name'), user_role=session.get('user_role'))
+
 
 @app.route('/api/access', methods=['POST'])
-def request_access():
+def access_document():
+    # 1) Session validation
     if not g.user_id:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    data   = request.get_json(silent=True) or {}
+    # 2) Block status
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
+
+    data = request.get_json(silent=True) or {}
     doc_id = data.get('documentId', '')
+    approval_token = data.get('approvalToken', '')
 
     if not isinstance(doc_id, str) or doc_id not in _VALID_DOC_IDS:
         return jsonify({'error': 'Document not found'}), 404
 
-    doc            = DOCUMENTS[doc_id]
-    allowed, reason = check_policy_engine(g.user_role, doc)
-    result         = 'ALLOWED' if allowed else 'DENIED'
+    doc = get_document_record(doc_id)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
 
+    # 3) Classification rule + admin override
+    if g.user_role == 'Admin':
+        policy_allowed, reason = True, 'Admin Override [AUDITED]'
+    else:
+        classification = doc['classification']
+        department = doc['department']
+        same_department = (department == 'General') or (department == g.user_role)
+
+        if classification == 'Public':
+            policy_allowed, reason = True, 'Public Classification'
+        elif classification == 'Internal':
+            policy_allowed, reason = True, 'Internal Access Policy'
+        elif classification == 'Confidential':
+            policy_allowed, reason = (True, 'Role-Based Access') if same_department else (False, 'Department Mismatch')
+        elif classification == 'Restricted':
+            policy_allowed, reason = False, 'Restricted: Escalation Required'
+        else:
+            policy_allowed, reason = False, 'Implicit Deny'
+
+    # 4) Department rule
+    department_allowed = g.user_role == 'Admin' or doc['department'] in ('General', g.user_role)
+    if policy_allowed and not department_allowed:
+        policy_allowed = False
+        reason = 'Department Mismatch'
+
+    # 5) Clearance level
+    if policy_allowed and g.user_role != 'Admin':
+        if int(g.user_clearance or 1) < int(doc.get('required_clearance') or 1):
+            policy_allowed = False
+            reason = 'insufficient_clearance'
+
+    # 6) Temporary approval token validation (if required)
+    token_authorized = False
+    if not policy_allowed and approval_token:
+        token_authorized, token_reason = _validate_temp_approval(approval_token, g.user_id, doc_id)
+        if token_authorized:
+            token_data = TEMP_APPROVALS.pop(approval_token, None)
+            if token_data:
+                log_access_event(g.user_id, g.user_name, g.user_role, doc_id, doc['title'], 'ALLOWED', 'token_used')
+            policy_allowed = True
+            reason = 'Temporary access approved by admin'
+        else:
+            reason = token_reason
+
+    result = 'ALLOWED' if policy_allowed else 'DENIED'
+
+    # 7) Only after authorization, decrypt content
+    decrypted_content = None
+    if policy_allowed:
+        try:
+            decrypted_content = decrypt_document(doc['encrypted_content'])
+        except InvalidToken:
+            log_access_event(g.user_id, g.user_name, g.user_role, doc_id, doc['title'], 'DENIED', 'decryption_failed')
+            return jsonify({'error': 'Document decryption failed'}), 500
+
+    # 8) Never log decrypted content
     log_access_event(g.user_id, g.user_name, g.user_role, doc_id, doc['title'], result, reason)
-    is_threat = detect_insider_threat(g.user_id)
 
-    return jsonify({
-        'access': result, 'reason': reason,
-        'threat_detected': is_threat,
-        'document': doc if allowed else None
+    risk_score = _update_risk(
+        g.user_username or '', g.user_id, g.user_name, g.user_role,
+        denied=(result == 'DENIED'), restricted_attempt=(doc['classification'] == 'Restricted')
+    )
+    threat_detected = risk_score >= 6
+
+    safe_document = None
+    if policy_allowed:
+        safe_document = {
+            'id': doc['id'],
+            'title': doc['title'],
+            'classification': doc['classification'],
+            'department': doc['department'],
+            'required_clearance': doc['required_clearance'],
+            'content': decrypted_content,
+        }
+
+    return jsonify({'access': result, 'reason': reason, 'threat_detected': threat_detected, 'document': safe_document})
+
+
+@app.route('/api/request-access', methods=['POST'])
+def request_temporary_access():
+    if not g.user_id:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if g.user_id in BLOCKED_USERS:
+        ACTIVE_SESSIONS.pop(g.user_id, None)
+        session.clear()
+        return jsonify({'error': 'User blocked by admin'}), 403
+
+    data = request.get_json(silent=True) or {}
+    doc_id = data.get('documentId', '')
+    if not isinstance(doc_id, str) or doc_id not in _VALID_DOC_IDS:
+        return jsonify({'error': 'Document not found'}), 404
+
+    now = time.time()
+    REQUEST_RATE_TRACKER.setdefault(g.user_id, [])
+    REQUEST_RATE_TRACKER[g.user_id] = [t for t in REQUEST_RATE_TRACKER[g.user_id] if now - t < 3600]
+    if len(REQUEST_RATE_TRACKER[g.user_id]) >= 5:
+        return jsonify({'error': 'Request limit exceeded'}), 429
+
+    REQUEST_RATE_TRACKER[g.user_id].append(now)
+    doc = get_document_record(doc_id)
+    ACCESS_REQUESTS.append({
+        'id': secrets.token_hex(8),
+        'userId': g.user_id,
+        'userName': g.user_name,
+        'userRole': g.user_role,
+        'documentId': doc_id,
+        'documentTitle': doc['title'] if doc else DOCUMENTS[doc_id]['title'],
+        'timestamp': now,
+        'status': 'PENDING'
     })
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/block-user', methods=['POST'])
+def block_user():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('userId', '')
+    if not isinstance(user_id, str) or not user_id:
+        return jsonify({'error': 'Invalid userId'}), 400
+
+    BLOCKED_USERS.add(user_id)
+    ACTIVE_SESSIONS.pop(user_id, None)
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/live-stats', methods=['GET'])
+def live_stats():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    allowed = sum(1 for e in ACCESS_EVENTS if e['result'] == 'ALLOWED')
+    denied = sum(1 for e in ACCESS_EVENTS if e['result'] == 'DENIED')
+    rejected = sum(1 for e in ACCESS_EVENTS if e['result'] == 'REJECTED')
+
+    return jsonify({'allowed': allowed, 'denied': denied, 'rejected': rejected})
+
+
+@app.route('/api/admin/requests', methods=['GET'])
+def admin_pending_requests():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    pending = [r for r in ACCESS_REQUESTS if r['status'] == 'PENDING']
+    return jsonify({'requests': pending})
+
+
+@app.route('/api/admin/approve-request', methods=['POST'])
+def approve_request():
+    if not g.user_id or g.user_role != 'Admin':
+        return jsonify({'error': 'Forbidden'}), 403
+
+    data = request.get_json(silent=True) or {}
+    request_id = data.get('requestId', '')
+    if not isinstance(request_id, str) or not request_id:
+        return jsonify({'error': 'Invalid requestId'}), 400
+
+    target_request = next((r for r in ACCESS_REQUESTS if r['id'] == request_id), None)
+    if not target_request:
+        return jsonify({'error': 'Request not found'}), 404
+
+    target_request['status'] = 'APPROVED'
+
+    token = secrets.token_urlsafe(32)
+    expires_at = time.time() + 600
+    TEMP_APPROVALS[token] = {
+        'user_id': target_request['userId'],
+        'user_name': target_request['userName'],
+        'user_role': target_request.get('userRole', 'Unknown'),
+        'document_id': target_request['documentId'],
+        'document_title': target_request['documentTitle'],
+        'expires_at': expires_at,
+    }
+
+    TEMP_ACCESS[(target_request['userId'], target_request['documentId'])] = expires_at
+    log_access_event(g.user_id, g.user_name, g.user_role, target_request['documentId'], target_request['documentTitle'], 'ALLOWED', 'token_created')
+    return jsonify({'success': True, 'approvalToken': token, 'expiresAt': expires_at})
+
 
 @app.route('/api/admin/stats', methods=['GET'])
 def get_admin_stats():
@@ -343,7 +653,7 @@ def get_admin_stats():
         return jsonify({'error': 'Forbidden'}), 403
 
     conn = get_db()
-    c    = conn.cursor()
+    c = conn.cursor()
     c.execute('SELECT COUNT(*) FROM access_logs')
     total = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM access_logs WHERE access_result='DENIED'")
@@ -361,9 +671,7 @@ def get_admin_stats():
         'threats': get_flagged_users(),
     })
 
-# ------------------------------------------------------------------ #
-#  Initialize DB at module load (works for both Gunicorn and dev)     #
-# ------------------------------------------------------------------ #
+
 init_db()
 
 if __name__ == '__main__':
