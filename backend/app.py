@@ -44,6 +44,7 @@ CORS(app, supports_credentials=True, origins=_allowed_origins)
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'sentinel.db'))
 SESSION_TIMEOUT = 15 * 60
 BLOCKED_USERS: set[str] = set()
+AUTO_BLOCKED_USERS: set[str] = set()
 ACTIVE_SESSIONS: dict[str, str] = {}
 ACCESS_EVENTS: list[dict] = []
 ACCESS_REQUESTS: list[dict] = []
@@ -272,6 +273,22 @@ def _risk_reset_if_inactive(username: str):
     now = time.time()
     if now - risk['last_activity'] > 600:
         USER_RISK[username] = {'score': 0, 'last_activity': now}
+        user = AUTH_DB.get(username)
+        if user:
+            user_id = user['id']
+            if user_id in AUTO_BLOCKED_USERS:
+                AUTO_BLOCKED_USERS.discard(user_id)
+                BLOCKED_USERS.discard(user_id)
+
+
+def _clear_auto_block(username: str):
+    user = AUTH_DB.get(username)
+    if not user:
+        return
+    user_id = user['id']
+    if user_id in AUTO_BLOCKED_USERS:
+        AUTO_BLOCKED_USERS.discard(user_id)
+        BLOCKED_USERS.discard(user_id)
 
 
 def _apply_risk_signal(username: str, user_id: str, user_name: str, user_role: str, doc: dict, denied: bool):
@@ -293,6 +310,7 @@ def _apply_risk_signal(username: str, user_id: str, user_name: str, user_role: s
 
     if risk['score'] >= 6 and user_id not in BLOCKED_USERS:
         BLOCKED_USERS.add(user_id)
+        AUTO_BLOCKED_USERS.add(user_id)
         ACTIVE_SESSIONS.pop(user_id, None)
         log_access_event(user_id, user_name, user_role, doc.get('id', 'risk'), doc.get('title', 'Risk Engine'), 'DENIED', 'risk_auto_block')
 
@@ -395,6 +413,9 @@ def login():
         ok = check_password_hash(user['hash'] if user else _DUMMY_HASH, password_input)
 
         if user and ok:
+            # Successful login resets risk state. If the account was
+            # auto-blocked by the risk engine, clear that temporary block.
+            _clear_auto_block(user['username'])
             session_id = secrets.token_hex(16)
             session.clear()
             session.update({
