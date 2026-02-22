@@ -34,6 +34,11 @@ interface RequestAccessResponse {
 }
 
 function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'light';
+    const savedTheme = window.localStorage.getItem('vault-theme');
+    return savedTheme === 'dark' ? 'dark' : 'light';
+  });
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser]         = useState<User | null>(null);
   const [csrfToken, setCsrfToken]             = useState<string>('');
@@ -63,6 +68,10 @@ function App() {
   // ---------------------------------------------------------------- //
   //  On mount: restore session if still valid                        //
   // ---------------------------------------------------------------- //
+  useEffect(() => {
+    window.localStorage.setItem('vault-theme', theme);
+  }, [theme]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -227,20 +236,20 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-vault-bg text-text-primary font-sans flex flex-col md:flex-row animate-fade-in">
+    <div className={`min-h-screen font-sans flex flex-col md:flex-row animate-fade-in transition-colors ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-vault-bg text-text-primary'}`}>
 
       {/* Sidebar */}
-      <aside className="w-full md:w-64 bg-vault-sidebar text-text-inverse border-r border-vault-border flex flex-col shrink-0">
-        <div className="p-6 border-b border-vault-border">
-          <h1 className="text-xl font-bold font-mono tracking-tighter text-text-inverse flex items-center gap-2">
+      <aside className={`w-full md:w-64 border-r flex flex-col shrink-0 transition-colors ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-vault-sidebar border-vault-border text-text-inverse'}`}>
+        <div className={`p-6 border-b ${theme === 'dark' ? 'border-slate-800' : 'border-vault-border'}`}>
+          <h1 className="text-xl font-bold font-mono tracking-tighter flex items-center gap-2">
             <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
             SENTINEL<span className="text-primary">ZERO</span>
           </h1>
-          <p className="text-xs text-text-muted mt-1">Secure Knowledge Vault</p>
+          <p className={`text-xs mt-1 ${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'}`}>Secure Knowledge Vault</p>
         </div>
 
         <nav className="flex-1 p-4 space-y-2">
-          <div className="px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider text-text-muted font-semibold">
+          <div className={`px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider font-semibold ${theme === 'dark' ? 'text-slate-500' : 'text-text-muted'}`}>
             Departments
           </div>
           {departments.map((department) => (
@@ -253,7 +262,7 @@ function App() {
               className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
                 activeTab === 'documents' && selectedDepartment === department
                   ? 'bg-primary/20 text-primary border border-primary/30'
-                  : 'text-text-muted hover:bg-white/5'
+                  : theme === 'dark' ? 'text-slate-400 hover:bg-slate-800/90' : 'text-text-muted hover:bg-white/5'
               }`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -269,7 +278,7 @@ function App() {
               className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
                 activeTab === 'admin'
                   ? 'bg-primary/20 text-primary border border-primary/30'
-                  : 'text-text-muted hover:bg-white/5'
+                  : theme === 'dark' ? 'text-slate-400 hover:bg-slate-800/90' : 'text-text-muted hover:bg-white/5'
               }`}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -281,14 +290,14 @@ function App() {
         </nav>
 
         {/* User Card */}
-        <div className="p-4 border-t border-vault-border">
+        <div className={`p-4 border-t ${theme === 'dark' ? 'border-slate-800' : 'border-vault-border'}`}>
           <div className="flex items-center gap-3">
             <img src={currentUser.avatar} alt={currentUser.name} className="w-9 h-9 rounded-full border-2 border-primary/30" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-text-inverse truncate">{currentUser.name}</p>
-              <p className="text-xs text-text-muted">{currentUser.role}</p>
+              <p className="text-sm font-semibold truncate">{currentUser.name}</p>
+              <p className={`text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'}`}>{currentUser.role}</p>
             </div>
-            <button onClick={handleLogout} title="Logout" className="text-text-muted hover:text-danger transition-colors">
+            <button onClick={handleLogout} title="Logout" className={`${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'} hover:text-danger transition-colors`}>
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
@@ -299,16 +308,26 @@ function App() {
 
       {/* Main */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="px-6 py-4 border-b border-vault-border flex items-center justify-between bg-vault-surface/50">
-          <h2 className="text-lg font-bold text-text-primary">
+        <header className={`px-6 py-4 border-b flex items-center justify-between ${theme === 'dark' ? 'border-slate-800 bg-slate-900/70' : 'border-vault-border bg-vault-surface/50'}`}>
+          <h2 className={`text-lg font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-text-primary'}`}>
             {activeTab === 'documents' ? `${selectedDepartment} Department` : 'Security Operations Center'}
           </h2>
-          {alerts.length > 0 && (
-            <div className="hidden md:flex items-center gap-3 bg-danger/10 border border-danger/30 px-4 py-2 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-danger animate-pulse"></span>
-              <span className="text-danger font-bold text-xs uppercase tracking-wider">Insider Threat Detected</span>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setTheme(prev => (prev === 'light' ? 'dark' : 'light'))}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold uppercase tracking-wider transition-colors ${theme === 'dark' ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700' : 'bg-white border-vault-border text-text-secondary hover:bg-slate-100'}`}
+              aria-label="Toggle light and dark theme"
+            >
+              {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+            </button>
+            {alerts.length > 0 && (
+              <div className="hidden md:flex items-center gap-3 bg-danger/10 border border-danger/30 px-4 py-2 rounded-full">
+                <span className="w-2 h-2 rounded-full bg-danger animate-pulse"></span>
+                <span className="text-danger font-bold text-xs uppercase tracking-wider">Insider Threat Detected</span>
+              </div>
+            )}
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-6">
@@ -329,7 +348,7 @@ function App() {
 
                 return (
                   <div key={doc.id} onClick={() => handleDocumentClick(doc)}
-                    className={`bg-vault-surface border ${borderColor} rounded-xl p-6 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 group relative overflow-hidden`}>
+                    className={`${theme === 'dark' ? 'bg-slate-900/90 hover:shadow-slate-950/50' : 'bg-vault-surface'} border ${borderColor} rounded-xl p-6 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 group relative overflow-hidden`}>
                     <div className="flex justify-between items-start mb-4">
                       <div className={`p-2 rounded-lg bg-black/30 ${iconColor}`}>
                         {doc.locked ? (
@@ -346,11 +365,11 @@ function App() {
                         {doc.classification}
                       </span>
                     </div>
-                    <h3 className="text-lg font-bold text-text-primary mb-1 group-hover:text-primary">{doc.title}</h3>
-                    <p className="text-xs text-text-secondary mb-4">{doc.department} Dept.</p>
-                    <div className="flex items-center text-xs text-text-muted">
+                    <h3 className={`text-lg font-bold mb-1 group-hover:text-primary ${theme === 'dark' ? 'text-slate-100' : 'text-text-primary'}`}>{doc.title}</h3>
+                    <p className={`text-xs mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-text-secondary'}`}>{doc.department} Dept.</p>
+                    <div className={`flex items-center text-xs ${theme === 'dark' ? 'text-slate-500' : 'text-text-muted'}`}>
                       <span className="mr-2">ID: {doc.id}</span>
-                      <span className="w-1 h-1 bg-text-muted rounded-full mx-1"></span>
+                      <span className={`w-1 h-1 rounded-full mx-1 ${theme === 'dark' ? 'bg-slate-500' : 'bg-text-muted'}`}></span>
                       <span>Encrypted</span>
                     </div>
                   </div>
