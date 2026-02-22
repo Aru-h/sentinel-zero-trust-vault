@@ -188,6 +188,26 @@ def _seed_documents(conn: sqlite3.Connection):
         )
 
 
+def _ensure_encrypted_documents(conn: sqlite3.Connection):
+    """One-time migration guard: encrypt legacy plaintext rows at rest."""
+    rows = conn.execute('SELECT id, content FROM documents').fetchall()
+    for row in rows:
+        content = row['content']
+        if content is None:
+            continue
+
+        # sqlite may return TEXT as str for legacy databases.
+        raw = content.encode('utf-8') if isinstance(content, str) else bytes(content)
+        try:
+            decrypt_document(raw)
+            continue
+        except Exception:
+            pass
+
+        encrypted = encrypt_document(raw.decode('utf-8', errors='replace'))
+        conn.execute('UPDATE documents SET content=? WHERE id=?', (encrypted, row['id']))
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = get_db()
@@ -219,6 +239,7 @@ def init_db():
         conn.execute('ALTER TABLE documents ADD COLUMN required_clearance INTEGER DEFAULT 1')
 
     _seed_documents(conn)
+    _ensure_encrypted_documents(conn)
     conn.commit()
     conn.close()
     print(f'[Sentinel] DB initialized at {DB_PATH}')
