@@ -42,6 +42,8 @@ function App() {
   const [deniedLog, setDeniedLog]             = useState<AccessLog | null>(null);
   const [openDocument, setOpenDocument]       = useState<Document | null>(null);
   const [activeTab, setActiveTab]             = useState<'documents' | 'admin'>('documents');
+  const departments = Array.from(new Set(MOCK_DOCUMENTS.map((doc) => doc.department)));
+  const [selectedDepartment, setSelectedDepartment] = useState<string>(departments[0] ?? 'General');
 
   // ---------------------------------------------------------------- //
   //  authFetch: every state-changing request carries the CSRF token  //
@@ -238,19 +240,28 @@ function App() {
         </div>
 
         <nav className="flex-1 p-4 space-y-2">
-          <button
-            onClick={() => setActiveTab('documents')}
-            className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
-              activeTab === 'documents'
-                ? 'bg-primary/20 text-primary border border-primary/30'
-                : 'text-text-muted hover:bg-white/5'
-            }`}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <span className="text-sm font-medium">Knowledge Repository</span>
-          </button>
+          <div className="px-4 pt-2 pb-1 text-[11px] uppercase tracking-wider text-text-muted font-semibold">
+            Departments
+          </div>
+          {departments.map((department) => (
+            <button
+              key={department}
+              onClick={() => {
+                setActiveTab('documents');
+                setSelectedDepartment(department);
+              }}
+              className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
+                activeTab === 'documents' && selectedDepartment === department
+                  ? 'bg-primary/20 text-primary border border-primary/30'
+                  : 'text-text-muted hover:bg-white/5'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M3 12h18M3 17h18" />
+              </svg>
+              <span className="text-sm font-medium">{department}</span>
+            </button>
+          ))}
 
           {currentUser.role === 'Admin' && (
             <button
@@ -290,7 +301,7 @@ function App() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="px-6 py-4 border-b border-vault-border flex items-center justify-between bg-vault-surface/50">
           <h2 className="text-lg font-bold text-text-primary">
-            {activeTab === 'documents' ? 'Knowledge Repository' : 'Security Operations Center'}
+            {activeTab === 'documents' ? `${selectedDepartment} Department` : 'Security Operations Center'}
           </h2>
           {alerts.length > 0 && (
             <div className="hidden md:flex items-center gap-3 bg-danger/10 border border-danger/30 px-4 py-2 rounded-full">
@@ -304,6 +315,7 @@ function App() {
           {activeTab === 'documents' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {MOCK_DOCUMENTS.map(doc => {
+                if (doc.department !== selectedDepartment) return null;
                 const borderColor =
                   doc.classification === 'Public'       ? 'border-badge-public/40 hover:border-badge-public' :
                   doc.classification === 'Internal'     ? 'border-badge-internal/40 hover:border-badge-internal' :
