@@ -27,6 +27,9 @@ interface BackendThreat {
 interface AdminStatsResponse {
   recent_events?: BackendAccessEvent[];
   threats?: BackendThreat[];
+  role_breakdown?: Array<{ role_title: string; count: number }>;
+  clearance_distribution?: Array<{ clearance_level: number; count: number }>;
+  clearance_mismatch_denied?: number;
 }
 
 interface RequestAccessResponse {
@@ -42,6 +45,10 @@ function App() {
   const [deniedLog, setDeniedLog]             = useState<AccessLog | null>(null);
   const [openDocument, setOpenDocument]       = useState<Document | null>(null);
   const [activeTab, setActiveTab]             = useState<'documents' | 'admin'>('documents');
+  const [approvalTokens, setApprovalTokens]   = useState<Record<string, string>>({});
+  const [roleBreakdown, setRoleBreakdown]     = useState<Array<{ role_title: string; count: number }>>([]);
+  const [clearanceDist, setClearanceDist]     = useState<Array<{ clearance_level: number; count: number }>>([]);
+  const [clearanceMismatchDenied, setClearanceMismatchDenied] = useState(0);
 
   // ---------------------------------------------------------------- //
   //  authFetch: every state-changing request carries the CSRF token  //
@@ -72,6 +79,9 @@ function App() {
             id:     data.user.id,
             name:   data.user.name,
             role:   data.user.role as Role,
+            role_title: data.user.role_title,
+            department: data.user.department,
+            clearance_level: data.user.clearance_level,
             avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
           });
           setIsAuthenticated(true);
@@ -107,7 +117,7 @@ function App() {
     try {
       const res = await authFetch(`${API_URL}/api/access`, {
         method: 'POST',
-        body: JSON.stringify({ documentId: doc.id }),
+        body: JSON.stringify({ documentId: doc.id, approvalToken: approvalTokens[doc.id] }),
       });
 
       if (res.status === 401) { handleLogout(); return; }
@@ -152,7 +162,9 @@ function App() {
         });
       }
 
-      if (data.access === 'ALLOWED') setOpenDocument(doc);
+      if (data.access === 'ALLOWED' && data.document) {
+        setOpenDocument({ ...doc, ...data.document, locked: false });
+      }
       else setDeniedLog(logEntry);
 
     } catch (e) {
@@ -210,6 +222,9 @@ function App() {
 
         setLogs(syncedLogs);
         setAlerts(syncedAlerts);
+        setRoleBreakdown(data.role_breakdown ?? []);
+        setClearanceDist(data.clearance_distribution ?? []);
+        setClearanceMismatchDenied(data.clearance_mismatch_denied ?? 0);
       } catch (error) {
         console.error('Failed to sync admin stats', error);
       }
@@ -275,7 +290,8 @@ function App() {
             <img src={currentUser.avatar} alt={currentUser.name} className="w-9 h-9 rounded-full border-2 border-primary/30" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-text-inverse truncate">{currentUser.name}</p>
-              <p className="text-xs text-text-muted">{currentUser.role}</p>
+              <p className="text-xs text-text-muted">{currentUser.role} · {currentUser.role_title}</p>
+              <p className="text-[10px] text-text-muted">Dept: {currentUser.department} · CLR-{currentUser.clearance_level}</p>
             </div>
             <button onClick={handleLogout} title="Logout" className="text-text-muted hover:text-danger transition-colors">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -335,7 +351,7 @@ function App() {
                       </span>
                     </div>
                     <h3 className="text-lg font-bold text-text-primary mb-1 group-hover:text-primary">{doc.title}</h3>
-                    <p className="text-xs text-text-secondary mb-4">{doc.department} Dept.</p>
+                    <p className="text-xs text-text-secondary mb-4">{doc.department.toUpperCase()} Dept. · Req CLR-{doc.required_clearance ?? '—'}</p>
                     <div className="flex items-center text-xs text-text-muted">
                       <span className="mr-2">ID: {doc.id}</span>
                       <span className="w-1 h-1 bg-text-muted rounded-full mx-1"></span>
@@ -348,7 +364,17 @@ function App() {
           )}
 
           {activeTab === 'admin' && (
-            <ThreatDashboard logs={logs} alerts={alerts} currentUser={currentUser} authFetch={authFetch} onBlocked={handleLogout} />
+            <ThreatDashboard
+              logs={logs}
+              alerts={alerts}
+              currentUser={currentUser}
+              authFetch={authFetch}
+              onBlocked={handleLogout}
+              roleBreakdown={roleBreakdown}
+              clearanceDistribution={clearanceDist}
+              clearanceMismatchDenied={clearanceMismatchDenied}
+              onApprovalToken={(documentId, token) => setApprovalTokens(prev => ({ ...prev, [documentId]: token }))}
+            />
           )}
         </div>
       </main>

@@ -17,22 +17,15 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({ document, user, 
 
   useEffect(() => {
     setLoading(true);
-    const fakeContent =
+    const secureContent = document.content ??
 `DOCUMENT ID: ${document.id}
 TITLE: ${document.title}
 
-This is a secure ${document.classification} document
-belonging to the ${document.department} department.
+Protected document metadata loaded.`;
 
-Access granted under Zero Trust Policy.
-
-User:      ${user.name} [${user.role}]
-Timestamp: ${new Date().toLocaleString()}
-Token:     ${displayToken}`;
-
-    const t = setTimeout(() => { setContent(fakeContent); setLoading(false); }, 800);
+    const t = setTimeout(() => { setContent(secureContent); setLoading(false); }, 800);
     return () => clearTimeout(t);
-  }, [document, user]);
+  }, [document]);
 
   // Focus the close button when modal opens (accessibility)
   useEffect(() => { closeRef.current?.focus(); }, []);
