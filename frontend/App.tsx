@@ -313,21 +313,45 @@ function App() {
             {activeTab === 'documents' ? `${selectedDepartment} Department` : 'Security Operations Center'}
           </h2>
           <div className="flex items-center gap-3">
-            <div className={`flex items-center gap-2 rounded-full border px-3 py-1.5 ${theme === 'dark' ? 'border-slate-700 bg-slate-800/70' : 'border-vault-border bg-white'}`}>
-              <span className={`text-[11px] font-semibold uppercase tracking-wider ${theme === 'light' ? 'text-primary' : 'text-slate-400'}`}>Light</span>
-              <button
-                type="button"
-                onClick={() => setTheme(prev => (prev === 'light' ? 'dark' : 'light'))}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${theme === 'dark' ? 'bg-primary/80' : 'bg-slate-300'}`}
-                aria-label="Toggle light and dark mode"
-                aria-pressed={theme === 'dark'}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${theme === 'dark' ? 'translate-x-6' : 'translate-x-1'}`}
-                />
-              </button>
-              <span className={`text-[11px] font-semibold uppercase tracking-wider ${theme === 'dark' ? 'text-primary' : 'text-text-muted'}`}>Dark</span>
-            </div>
+<div
+  className={`flex items-center gap-2 rounded-full border px-3 py-1.5 ${
+    theme === 'dark'
+      ? 'border-slate-700 bg-slate-800/70'
+      : 'border-vault-border bg-white'
+  }`}
+>
+  <span
+    className={`text-[11px] font-semibold uppercase tracking-wider ${
+      theme === 'light' ? 'text-primary' : 'text-slate-400'
+    }`}
+  >
+    Light
+  </span>
+
+  <button
+    type="button"
+    onClick={() => setTheme(prev => (prev === 'light' ? 'dark' : 'light'))}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+      theme === 'dark' ? 'bg-primary/80' : 'bg-slate-300'
+    }`}
+    aria-label="Toggle light and dark mode"
+    aria-pressed={theme === 'dark'}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+        theme === 'dark' ? 'translate-x-6' : 'translate-x-1'
+      }`}
+    />
+  </button>
+
+  <span
+    className={`text-[11px] font-semibold uppercase tracking-wider ${
+      theme === 'dark' ? 'text-primary' : 'text-text-muted'
+    }`}
+  >
+    Dark
+  </span>
+</div>
             {alerts.length > 0 && (
               <div className="hidden md:flex items-center gap-3 bg-danger/10 border border-danger/30 px-4 py-2 rounded-full">
                 <span className="w-2 h-2 rounded-full bg-danger animate-pulse"></span>
