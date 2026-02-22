@@ -15,6 +15,8 @@ export enum Classification {
 export enum AccessResult {
   ALLOWED = 'ALLOWED',
   DENIED = 'DENIED',
+  TERMINATION_PENDING = 'TERMINATION_PENDING',
+  SESSION_TERMINATED = 'SESSION_TERMINATED',
 }
 
 export interface User {

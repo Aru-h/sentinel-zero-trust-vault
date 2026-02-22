@@ -5,6 +5,7 @@ import { ThreatDashboard } from './components/ThreatDashboard';
 import { AccessDenyModal } from './components/AccessDenyModal';
 import { DocumentReader } from './components/DocumentReader';
 import { LoginScreen } from './components/LoginScreen';
+import { TerminationOverlay } from './components/TerminationOverlay';
 
 interface BackendAccessEvent {
   id: string;
@@ -33,6 +34,14 @@ interface RequestAccessResponse {
   error?: string;
 }
 
+interface TerminationPendingResponse {
+  access: 'TERMINATION_PENDING';
+  countdown: number;
+  message?: string;
+}
+
+const TERMINATION_DEADLINE_KEY = 'terminationDeadline';
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser]         = useState<User | null>(null);
@@ -42,10 +51,24 @@ function App() {
   const [deniedLog, setDeniedLog]             = useState<AccessLog | null>(null);
   const [openDocument, setOpenDocument]       = useState<Document | null>(null);
   const [activeTab, setActiveTab]             = useState<'documents' | 'admin'>('documents');
+  const [terminationCountdown, setTerminationCountdown] = useState<number | null>(null);
+  const [terminationDeadline, setTerminationDeadline] = useState<number | null>(null);
 
-  // ---------------------------------------------------------------- //
-  //  authFetch: every state-changing request carries the CSRF token  //
-  // ---------------------------------------------------------------- //
+  const activateTerminationCountdown = useCallback((seconds: number) => {
+    const deadline = Date.now() + Math.max(1, seconds) * 1000;
+    setTerminationDeadline(deadline);
+    setTerminationCountdown(Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
+    sessionStorage.setItem(TERMINATION_DEADLINE_KEY, String(deadline));
+    setOpenDocument(null);
+    setDeniedLog(null);
+  }, []);
+
+  const clearTerminationCountdown = useCallback(() => {
+    setTerminationDeadline(null);
+    setTerminationCountdown(null);
+    sessionStorage.removeItem(TERMINATION_DEADLINE_KEY);
+  }, []);
+
   const authFetch = useCallback(
     (url: string, options: RequestInit = {}) => {
       const headers: Record<string, string> = {
@@ -58,23 +81,52 @@ function App() {
     [csrfToken]
   );
 
-  // ---------------------------------------------------------------- //
-  //  On mount: restore session if still valid                        //
-  // ---------------------------------------------------------------- //
+  const handleLogout = useCallback(async () => {
+    try {
+      await authFetch(`${API_URL}/logout`, { method: 'POST' });
+    } catch {
+      // best effort logout
+    }
+    clearTerminationCountdown();
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setCsrfToken('');
+    setLogs([]);
+    setAlerts([]);
+  }, [authFetch, clearTerminationCountdown]);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem(TERMINATION_DEADLINE_KEY);
+    if (!stored) return;
+    const deadline = Number(stored);
+    if (Number.isFinite(deadline) && deadline > Date.now()) {
+      setTerminationDeadline(deadline);
+      setTerminationCountdown(Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
+    } else {
+      sessionStorage.removeItem(TERMINATION_DEADLINE_KEY);
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch(`${API_URL}/api/me`, { credentials: 'include' });
         if (res.ok) {
           const data = await res.json();
+          if (data?.access === 'TERMINATION_PENDING') {
+            activateTerminationCountdown(data.countdown ?? 10);
+            return;
+          }
           setCsrfToken(data.csrf_token ?? '');
           setCurrentUser({
-            id:     data.user.id,
-            name:   data.user.name,
-            role:   data.user.role as Role,
+            id: data.user.id,
+            name: data.user.name,
+            role: data.user.role as Role,
             avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
           });
           setIsAuthenticated(true);
+        } else if (res.status === 401) {
+          await handleLogout();
         } else if (res.status === 403) {
           const data = await res.json();
           if (data?.error === 'User blocked by admin') {
@@ -85,32 +137,63 @@ function App() {
         // Not authenticated — render login screen
       }
     })();
-  }, []);
+  }, [activateTerminationCountdown, handleLogout]);
+
+  useEffect(() => {
+    if (!terminationDeadline) return;
+
+    const tick = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((terminationDeadline - Date.now()) / 1000));
+      setTerminationCountdown(remaining);
+      if (remaining <= 0) {
+        window.clearInterval(tick);
+        handleLogout();
+      }
+    }, 1000);
+
+    return () => window.clearInterval(tick);
+  }, [terminationDeadline, handleLogout]);
+
+  useEffect(() => {
+    if (!terminationCountdown || !isAuthenticated) return;
+
+    const monitor = window.setInterval(async () => {
+      try {
+        const res = await authFetch(`${API_URL}/api/me`);
+        if (res.status === 401) {
+          await handleLogout();
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.access === 'TERMINATION_PENDING') {
+            activateTerminationCountdown(data.countdown ?? terminationCountdown);
+          }
+        }
+      } catch {
+        await handleLogout();
+      }
+    }, 1000);
+
+    return () => window.clearInterval(monitor);
+  }, [terminationCountdown, isAuthenticated, authFetch, activateTerminationCountdown, handleLogout]);
 
   const handleLogin = (user: User, token: string) => {
+    clearTerminationCountdown();
     setCsrfToken(token);
     setCurrentUser(user);
     setIsAuthenticated(true);
   };
 
-  const handleLogout = async () => {
-    await authFetch(`${API_URL}/logout`, { method: 'POST' });
-    setIsAuthenticated(false);
-    setCurrentUser(null);
-    setCsrfToken('');
-    setLogs([]);
-    setAlerts([]);
-  };
-
   const handleDocumentClick = async (doc: Document) => {
-    if (!currentUser) return;
+    if (!currentUser || terminationCountdown !== null) return;
     try {
       const res = await authFetch(`${API_URL}/api/access`, {
         method: 'POST',
         body: JSON.stringify({ documentId: doc.id }),
       });
 
-      if (res.status === 401) { handleLogout(); return; }
+      if (res.status === 401) { await handleLogout(); return; }
       if (res.status === 403) {
         const data = await res.json();
         if (data?.error === 'User blocked by admin') {
@@ -120,6 +203,11 @@ function App() {
       }
 
       const data = await res.json();
+
+      if (data?.access === 'TERMINATION_PENDING') {
+        activateTerminationCountdown(data.countdown ?? 10);
+        return;
+      }
 
       const logEntry: AccessLog = {
         id:            `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -161,15 +249,27 @@ function App() {
   };
 
   const handleRequestAccess = async (documentId: string) => {
+    if (terminationCountdown !== null) return;
     try {
       const res = await authFetch(`${API_URL}/api/request-access`, {
         method: 'POST',
         body: JSON.stringify({ documentId }),
       });
+
+      if (res.status === 401) {
+        await handleLogout();
+        return;
+      }
       if (res.status === 403) {
         const data: RequestAccessResponse = await res.json();
         if (data.error === 'User blocked by admin') {
           await handleLogout();
+        }
+      }
+      if (res.ok) {
+        const maybePending: Partial<TerminationPendingResponse> = await res.json().catch(() => ({}));
+        if (maybePending.access === 'TERMINATION_PENDING') {
+          activateTerminationCountdown(maybePending.countdown ?? 10);
         }
       }
     } catch (error) {
@@ -178,15 +278,20 @@ function App() {
   };
 
   useEffect(() => {
-    if (!isAuthenticated || currentUser?.role !== Role.ADMIN) return;
+    if (!isAuthenticated || currentUser?.role !== Role.ADMIN || terminationCountdown !== null) return;
 
     const loadAdminStats = async () => {
       try {
         const res = await authFetch(`${API_URL}/api/admin/stats`);
-        if (res.status === 401) { handleLogout(); return; }
+        if (res.status === 401) { await handleLogout(); return; }
         if (!res.ok) return;
 
         const data: AdminStatsResponse = await res.json();
+        if ((data as unknown as TerminationPendingResponse).access === 'TERMINATION_PENDING') {
+          activateTerminationCountdown((data as unknown as TerminationPendingResponse).countdown ?? 10);
+          return;
+        }
+
         const syncedLogs: AccessLog[] = (data.recent_events ?? []).map((event) => ({
           id: event.id,
           timestamp: Math.round((event.timestamp ?? 0) * 1000),
@@ -218,7 +323,7 @@ function App() {
     loadAdminStats();
     const timer = setInterval(loadAdminStats, 3000);
     return () => clearInterval(timer);
-  }, [isAuthenticated, currentUser, authFetch]);
+  }, [isAuthenticated, currentUser, authFetch, terminationCountdown, handleLogout, activateTerminationCountdown]);
 
   if (!isAuthenticated || !currentUser) {
     return <LoginScreen onLogin={handleLogin} />;
@@ -226,8 +331,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-vault-bg text-text-primary font-sans flex flex-col md:flex-row animate-fade-in">
-
-      {/* Sidebar */}
       <aside className="w-full md:w-64 bg-vault-sidebar text-text-inverse border-r border-vault-border flex flex-col shrink-0">
         <div className="p-6 border-b border-vault-border">
           <h1 className="text-xl font-bold font-mono tracking-tighter text-text-inverse flex items-center gap-2">
@@ -269,7 +372,6 @@ function App() {
           )}
         </nav>
 
-        {/* User Card */}
         <div className="p-4 border-t border-vault-border">
           <div className="flex items-center gap-3">
             <img src={currentUser.avatar} alt={currentUser.name} className="w-9 h-9 rounded-full border-2 border-primary/30" />
@@ -286,7 +388,6 @@ function App() {
         </div>
       </aside>
 
-      {/* Main */}
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="px-6 py-4 border-b border-vault-border flex items-center justify-between bg-vault-surface/50">
           <h2 className="text-lg font-bold text-text-primary">
@@ -317,7 +418,7 @@ function App() {
 
                 return (
                   <div key={doc.id} onClick={() => handleDocumentClick(doc)}
-                    className={`bg-vault-surface border ${borderColor} rounded-xl p-6 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 group relative overflow-hidden`}>
+                    className={`bg-vault-surface border ${borderColor} rounded-xl p-6 ${terminationCountdown !== null ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} transition-all duration-300 hover:shadow-lg hover:-translate-y-1 group relative overflow-hidden`}>
                     <div className="flex justify-between items-start mb-4">
                       <div className={`p-2 rounded-lg bg-black/30 ${iconColor}`}>
                         {doc.locked ? (
@@ -357,6 +458,7 @@ function App() {
       {openDocument && (
         <DocumentReader document={openDocument} user={currentUser} onClose={() => setOpenDocument(null)} />
       )}
+      {terminationCountdown !== null && <TerminationOverlay countdown={terminationCountdown} />}
     </div>
   );
 }
