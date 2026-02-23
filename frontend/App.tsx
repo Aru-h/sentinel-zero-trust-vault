@@ -1,364 +1,298 @@
-import { useState, useEffect, useCallback } from 'react';
-import { MOCK_DOCUMENTS, API_URL } from './constants';
-import { User, Document, Role, AccessLog, ThreatAlert, AccessResult } from './types';
-import { ThreatDashboard } from './components/ThreatDashboard';
-import { AccessDenyModal } from './components/AccessDenyModal';
-import { DocumentReader } from './components/DocumentReader';
-import { LoginScreen } from './components/LoginScreen';
-
-interface BackendAccessEvent {
-  id: string;
-  timestamp: number;
-  user_id: string;
-  user_name: string;
-  user_role: Role;
-  document_id: string;
-  document_title: string;
-  access_result: AccessResult;
-  reason: string;
-}
-
-interface BackendThreat {
-  user_id: string;
-  user_name: string;
-  deny_count: number;
-}
-
-interface AdminStatsResponse {
-  recent_events?: BackendAccessEvent[];
-  threats?: BackendThreat[];
-}
-
-interface RequestAccessResponse {
-  error?: string;
-}
-
-function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentUser, setCurrentUser]         = useState<User | null>(null);
-  const [csrfToken, setCsrfToken]             = useState<string>('');
-  const [logs, setLogs]                       = useState<AccessLog[]>([]);
-  const [alerts, setAlerts]                   = useState<ThreatAlert[]>([]);
-  const [deniedLog, setDeniedLog]             = useState<AccessLog | null>(null);
-  const [openDocument, setOpenDocument]       = useState<Document | null>(null);
-  const [activeTab, setActiveTab]             = useState<'documents' | 'admin'>('documents');
-
-  // ---------------------------------------------------------------- //
-  //  authFetch: every state-changing request carries the CSRF token  //
-  // ---------------------------------------------------------------- //
-  const authFetch = useCallback(
-    (url: string, options: RequestInit = {}) => {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        ...(options.headers as Record<string, string>),
-      };
-      if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
-      return fetch(url, { ...options, headers, credentials: 'include' });
-    },
-    [csrfToken]
-  );
-
-  // ---------------------------------------------------------------- //
-  //  On mount: restore session if still valid                        //
-  // ---------------------------------------------------------------- //
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/me`, { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json();
-          setCsrfToken(data.csrf_token ?? '');
-          setCurrentUser({
-            id:     data.user.id,
-            name:   data.user.name,
-            role:   data.user.role as Role,
-            avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
-          });
-          setIsAuthenticated(true);
-        } else if (res.status === 403) {
-          const data = await res.json();
-          if (data?.error === 'User blocked by admin') {
-            await handleLogout();
-          }
-        }
-      } catch {
-        // Not authenticated — render login screen
-      }
-    })();
-  }, []);
-
-  const handleLogin = (user: User, token: string) => {
-    setCsrfToken(token);
-    setCurrentUser(user);
-    setIsAuthenticated(true);
-  };
-
-  const handleLogout = async () => {
-    await authFetch(`${API_URL}/logout`, { method: 'POST' });
-    setIsAuthenticated(false);
-    setCurrentUser(null);
-    setCsrfToken('');
-    setLogs([]);
-    setAlerts([]);
-  };
-
-  const handleDocumentClick = async (doc: Document) => {
-    if (!currentUser) return;
-    try {
-      const res = await authFetch(`${API_URL}/api/access`, {
-        method: 'POST',
-        body: JSON.stringify({ documentId: doc.id }),
-      });
-
-      if (res.status === 401) { handleLogout(); return; }
-      if (res.status === 403) {
-        const data = await res.json();
-        if (data?.error === 'User blocked by admin') {
-          await handleLogout();
-        }
-        return;
-      }
-
-      const data = await res.json();
-
-      const logEntry: AccessLog = {
-        id:            `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        timestamp:     Date.now(),
-        userId:        currentUser.id,
-        userName:      currentUser.name,
-        userRole:      currentUser.role,
-        documentId:    doc.id,
-        documentTitle: doc.title,
-        result:        data.access,
-        reason:        data.reason,
-      };
-
-      setLogs(prev => [logEntry, ...prev]);
-
-      if (data.threat_detected) {
-        setAlerts(prev => {
-          const alreadyFlagged = prev.some(
-            a => a.userId === currentUser.id && Date.now() - a.timestamp < 60_000
-          );
-          if (alreadyFlagged) return prev;
-          return [{
-            id:          `${Date.now().toString(36)}-threat`,
-            timestamp:   Date.now(),
-            userId:      currentUser.id,
-            userName:    currentUser.name,
-            severity:    'HIGH' as const,
-            description: 'Insider Threat Detected by Backend Security Engine',
-          }, ...prev];
-        });
-      }
-
-      if (data.access === 'ALLOWED') setOpenDocument(doc);
-      else setDeniedLog(logEntry);
-
-    } catch (e) {
-      console.error('Access request failed', e);
-    }
-  };
-
-  const handleRequestAccess = async (documentId: string) => {
-    try {
-      const res = await authFetch(`${API_URL}/api/request-access`, {
-        method: 'POST',
-        body: JSON.stringify({ documentId }),
-      });
-      if (res.status === 403) {
-        const data: RequestAccessResponse = await res.json();
-        if (data.error === 'User blocked by admin') {
-          await handleLogout();
-        }
-      }
-    } catch (error) {
-      console.error('Failed to request temporary access', error);
-    }
-  };
-
-  useEffect(() => {
-    if (!isAuthenticated || currentUser?.role !== Role.ADMIN) return;
-
-    const loadAdminStats = async () => {
-      try {
-        const res = await authFetch(`${API_URL}/api/admin/stats`);
-        if (res.status === 401) { handleLogout(); return; }
-        if (!res.ok) return;
-
-        const data: AdminStatsResponse = await res.json();
-        const syncedLogs: AccessLog[] = (data.recent_events ?? []).map((event) => ({
-          id: event.id,
-          timestamp: Math.round((event.timestamp ?? 0) * 1000),
-          userId: event.user_id,
-          userName: event.user_name,
-          userRole: event.user_role,
-          documentId: event.document_id,
-          documentTitle: event.document_title,
-          result: event.access_result,
-          reason: event.reason,
-        }));
-
-        const syncedAlerts: ThreatAlert[] = (data.threats ?? []).map((threat) => ({
-          id: `threat-${threat.user_id}`,
-          timestamp: Date.now(),
-          userId: threat.user_id,
-          userName: threat.user_name,
-          severity: 'HIGH',
-          description: `${threat.deny_count} denied requests in the last minute`,
-        }));
-
-        setLogs(syncedLogs);
-        setAlerts(syncedAlerts);
-      } catch (error) {
-        console.error('Failed to sync admin stats', error);
-      }
-    };
-
-    loadAdminStats();
-    const timer = setInterval(loadAdminStats, 3000);
-    return () => clearInterval(timer);
-  }, [isAuthenticated, currentUser, authFetch]);
-
-  if (!isAuthenticated || !currentUser) {
-    return <LoginScreen onLogin={handleLogin} />;
-  }
-
-  return (
-    <div className="min-h-screen bg-vault-bg text-text-primary font-sans flex flex-col md:flex-row animate-fade-in">
-
-      {/* Sidebar */}
-      <aside className="w-full md:w-64 bg-vault-sidebar text-text-inverse border-r border-vault-border flex flex-col shrink-0">
-        <div className="p-6 border-b border-vault-border">
-          <h1 className="text-xl font-bold font-mono tracking-tighter text-text-inverse flex items-center gap-2">
-            <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
-            SENTINEL<span className="text-primary">ZERO</span>
-          </h1>
-          <p className="text-xs text-text-muted mt-1">Secure Knowledge Vault</p>
-        </div>
-
-        <nav className="flex-1 p-4 space-y-2">
-          <button
-            onClick={() => setActiveTab('documents')}
-            className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
-              activeTab === 'documents'
-                ? 'bg-primary/20 text-primary border border-primary/30'
-                : 'text-text-muted hover:bg-white/5'
-            }`}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            <span className="text-sm font-medium">Knowledge Repository</span>
-          </button>
-
-          {currentUser.role === 'Admin' && (
-            <button
-              onClick={() => setActiveTab('admin')}
-              className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all ${
-                activeTab === 'admin'
-                  ? 'bg-primary/20 text-primary border border-primary/30'
-                  : 'text-text-muted hover:bg-white/5'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-              <span className="text-sm font-medium">Security Operations</span>
-            </button>
-          )}
-        </nav>
-
-        {/* User Card */}
-        <div className="p-4 border-t border-vault-border">
-          <div className="flex items-center gap-3">
-            <img src={currentUser.avatar} alt={currentUser.name} className="w-9 h-9 rounded-full border-2 border-primary/30" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-text-inverse truncate">{currentUser.name}</p>
-              <p className="text-xs text-text-muted">{currentUser.role}</p>
-            </div>
-            <button onClick={handleLogout} title="Logout" className="text-text-muted hover:text-danger transition-colors">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="px-6 py-4 border-b border-vault-border flex items-center justify-between bg-vault-surface/50">
-          <h2 className="text-lg font-bold text-text-primary">
-            {activeTab === 'documents' ? 'Knowledge Repository' : 'Security Operations Center'}
-          </h2>
-          {alerts.length > 0 && (
-            <div className="hidden md:flex items-center gap-3 bg-danger/10 border border-danger/30 px-4 py-2 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-danger animate-pulse"></span>
-              <span className="text-danger font-bold text-xs uppercase tracking-wider">Insider Threat Detected</span>
-            </div>
-          )}
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-6">
-          {activeTab === 'documents' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {MOCK_DOCUMENTS.map(doc => {
-                const borderColor =
-                  doc.classification === 'Public'       ? 'border-badge-public/40 hover:border-badge-public' :
-                  doc.classification === 'Internal'     ? 'border-badge-internal/40 hover:border-badge-internal' :
-                  doc.classification === 'Confidential' ? 'border-badge-confidential/40 hover:border-badge-confidential' :
-                  'border-badge-restricted/40 hover:border-badge-restricted';
-                const iconColor =
-                  doc.classification === 'Public'       ? 'text-badge-public' :
-                  doc.classification === 'Internal'     ? 'text-badge-internal' :
-                  doc.classification === 'Confidential' ? 'text-badge-confidential' :
-                  'text-badge-restricted';
-
-                return (
-                  <div key={doc.id} onClick={() => handleDocumentClick(doc)}
-                    className={`bg-vault-surface border ${borderColor} rounded-xl p-6 cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 group relative overflow-hidden`}>
-                    <div className="flex justify-between items-start mb-4">
-                      <div className={`p-2 rounded-lg bg-black/30 ${iconColor}`}>
-                        {doc.locked ? (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                          </svg>
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 002 2v6a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </div>
-                      <span className={`text-[10px] uppercase font-bold tracking-wider border px-2 py-0.5 rounded ${iconColor} border-current opacity-70`}>
-                        {doc.classification}
-                      </span>
-                    </div>
-                    <h3 className="text-lg font-bold text-text-primary mb-1 group-hover:text-primary">{doc.title}</h3>
-                    <p className="text-xs text-text-secondary mb-4">{doc.department} Dept.</p>
-                    <div className="flex items-center text-xs text-text-muted">
-                      <span className="mr-2">ID: {doc.id}</span>
-                      <span className="w-1 h-1 bg-text-muted rounded-full mx-1"></span>
-                      <span>Encrypted</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {activeTab === 'admin' && (
-            <ThreatDashboard logs={logs} alerts={alerts} currentUser={currentUser} authFetch={authFetch} onBlocked={handleLogout} />
-          )}
-        </div>
-      </main>
-
-      <AccessDenyModal log={deniedLog} onClose={() => setDeniedLog(null)} onRequestAccess={handleRequestAccess} />
-      {openDocument && (
-        <DocumentReader document={openDocument} user={currentUser} onClose={() => setOpenDocument(null)} />
-      )}
-    </div>
-  );
-}
-
-export default App;
+diff --git a/backend/app.py b/backend/app.py
+index 11d9b60420758568ef61a6cce85dec83b950bd00..eac12410f4884be75c1f7422a6ec5205a901bdbb 100644
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -31,50 +31,63 @@ app.config.update(
+ )
+ 
+ _allowed_origins = [
+     o.strip()
+     for o in os.environ.get(
+         'CORS_ORIGINS',
+         'http://localhost:5173,http://127.0.0.1:5173,https://sentinel-zero-trust-vault.vercel.app'
+     ).split(',')
+     if o.strip()
+ ]
+ 
+ CORS(app, supports_credentials=True, origins=_allowed_origins)
+ 
+ DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'sentinel.db'))
+ SESSION_TIMEOUT = 15 * 60
+ BLOCKED_USERS: set[str] = set()
+ AUTO_BLOCKED_USERS: set[str] = set()
+ ACTIVE_SESSIONS: dict[str, str] = {}
+ ACCESS_EVENTS: list[dict] = []
+ ACCESS_REQUESTS: list[dict] = []
+ TEMP_APPROVALS: dict[str, dict] = {}
+ REQUEST_RATE_TRACKER: dict[str, list[float]] = {}
+ USER_RISK: dict[str, dict] = {}
+ 
+ 
++def _is_admin_session() -> bool:
++    role = session.get('user_role') or getattr(g, 'user_role', None)
++    role_title = session.get('role_title') or getattr(g, 'role_title', None)
++    return role == 'Admin' or role_title == 'admin'
++
++
++def _username_from_user_id(user_id: str) -> str | None:
++    for username, user in AUTH_DB.items():
++        if user['id'] == user_id:
++            return username
++    return None
++
++
+ def _load_encryption_key() -> bytes:
+     configured = os.environ.get('ENCRYPTION_KEY')
+     if configured:
+         try:
+             Fernet(configured.encode('utf-8'))
+             return configured.encode('utf-8')
+         except Exception:
+             print('[Sentinel][WARN] ENCRYPTION_KEY invalid; generating runtime-only key.')
+     runtime_key = Fernet.generate_key()
+     print('[Sentinel][WARN] ENCRYPTION_KEY missing; using runtime-only key (documents unreadable after restart).')
+     return runtime_key
+ 
+ 
+ FERNET = Fernet(_load_encryption_key())
+ 
+ 
+ def encrypt_document(plaintext: str) -> bytes:
+     return FERNET.encrypt(plaintext.encode('utf-8'))
+ 
+ 
+ def decrypt_document(ciphertext: bytes) -> str:
+     return FERNET.decrypt(ciphertext).decode('utf-8')
+ 
+ 
+ _RATE_LIMIT_STORE: dict = {}
+@@ -348,51 +361,52 @@ def _validate_csrf():
+ 
+ app.before_request(_validate_csrf)
+ 
+ 
+ @app.before_request
+ def extract_identity():
+     if request.method == 'OPTIONS':
+         return
+     cleanup_expired_tokens()
+     if 'user_id' in session:
+         now = time.time()
+         expected_session_id = ACTIVE_SESSIONS.get(session['user_id'])
+         if not expected_session_id or expected_session_id != session.get('session_id'):
+             session.clear()
+             g.user_id = None
+             return
+         if now - session.get('last_active', now) > SESSION_TIMEOUT:
+             ACTIVE_SESSIONS.pop(session['user_id'], None)
+             session.clear()
+             g.user_id = None
+             return
+         session['last_active'] = now
+         g.user_id = session['user_id']
+         g.user_name = session['user_name']
+         g.user_role = session['user_role']
+-        g.username = session['username']
++        g.role_title = session.get('role_title', '')
++        g.username = session.get('username') or _username_from_user_id(g.user_id)
+         g.user_clearance_level = session.get('clearance_level', 1)
+     else:
+         g.user_id = None
+ 
+ 
+ @app.route('/api/me', methods=['GET'])
+ def get_current_user():
+     if not g.user_id:
+         return jsonify({'authenticated': False}), 401
+     if g.user_id in BLOCKED_USERS:
+         ACTIVE_SESSIONS.pop(g.user_id, None)
+         session.clear()
+         return jsonify({'error': 'User blocked by admin'}), 403
+     if 'csrf_token' not in session:
+         session['csrf_token'] = secrets.token_hex(32)
+     return jsonify({
+         'authenticated': True,
+         'csrf_token': session['csrf_token'],
+         'user': {'id': g.user_id, 'name': g.user_name, 'role': g.user_role}
+     })
+ 
+ 
+ @app.route('/login', methods=['GET', 'POST'])
+ def login():
+     ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+@@ -431,51 +445,51 @@ def login():
+             if request.is_json:
+                 return jsonify({
+                     'success': True,
+                     'csrf_token': session['csrf_token'],
+                     'user': {k: user[k] for k in ('id', 'name', 'role')}
+                 })
+             return redirect(url_for('dashboard_view'))
+ 
+         if request.is_json:
+             return jsonify({'error': 'Invalid credentials'}), 401
+         flash('Invalid username or password', 'error')
+ 
+     return render_template('login.html')
+ 
+ 
+ @app.route('/logout', methods=['GET', 'POST'])
+ def logout():
+     if session.get('user_id'):
+         ACTIVE_SESSIONS.pop(session['user_id'], None)
+     session.clear()
+     return jsonify({'success': True}) if request.is_json else redirect(url_for('login'))
+ 
+ 
+ @app.route('/dashboard')
+ def dashboard_view():
+-    if 'user_id' not in session or session.get('user_role') != 'Admin':
++    if 'user_id' not in session or not _is_admin_session():
+         return redirect(url_for('login'))
+     return render_template('dashboard.html',
+                            user_name=session.get('user_name'),
+                            user_role=session.get('user_role'))
+ 
+ 
+ @app.route('/api/access', methods=['POST'])
+ def access_document():
+     if not g.user_id:
+         return jsonify({'error': 'Unauthorized'}), 401
+ 
+     if g.user_id in BLOCKED_USERS:
+         ACTIVE_SESSIONS.pop(g.user_id, None)
+         session.clear()
+         return jsonify({'error': 'User blocked by admin'}), 403
+ 
+     data = request.get_json(silent=True) or {}
+     doc_id = data.get('documentId', '')
+     provided_token = data.get('temporaryToken', '')
+ 
+     if not isinstance(doc_id, str) or doc_id not in _VALID_DOC_IDS:
+         return jsonify({'error': 'Document not found'}), 404
+ 
+     doc_meta = DOCUMENTS[doc_id] | {'id': doc_id}
+ 
+@@ -560,117 +574,117 @@ def request_temporary_access():
+     if not isinstance(doc_id, str) or doc_id not in _VALID_DOC_IDS:
+         return jsonify({'error': 'Document not found'}), 404
+ 
+     now = time.time()
+     REQUEST_RATE_TRACKER.setdefault(g.user_id, [])
+     REQUEST_RATE_TRACKER[g.user_id] = [t for t in REQUEST_RATE_TRACKER[g.user_id] if now - t < 3600]
+     if len(REQUEST_RATE_TRACKER[g.user_id]) >= 5:
+         return jsonify({'error': 'Request limit exceeded'}), 429
+ 
+     REQUEST_RATE_TRACKER[g.user_id].append(now)
+     ACCESS_REQUESTS.append({
+         'id': secrets.token_hex(8),
+         'userId': g.user_id,
+         'userName': g.user_name,
+         'documentId': doc_id,
+         'documentTitle': DOCUMENTS[doc_id]['title'],
+         'timestamp': now,
+         'status': 'PENDING'
+     })
+ 
+     return jsonify({'success': True})
+ 
+ 
+ @app.route('/api/admin/block-user', methods=['POST'])
+ def block_user():
+-    if not g.user_id or g.user_role != 'Admin':
++    if not g.user_id or not _is_admin_session():
+         return jsonify({'error': 'Forbidden'}), 403
+ 
+     data = request.get_json(silent=True) or {}
+     user_id = data.get('userId', '')
+     if not isinstance(user_id, str) or not user_id:
+         return jsonify({'error': 'Invalid userId'}), 400
+ 
+     BLOCKED_USERS.add(user_id)
+     ACTIVE_SESSIONS.pop(user_id, None)
+     return jsonify({'success': True})
+ 
+ 
+ @app.route('/api/admin/live-stats', methods=['GET'])
+ def live_stats():
+-    if not g.user_id or g.user_role != 'Admin':
++    if not g.user_id or not _is_admin_session():
+         return jsonify({'error': 'Forbidden'}), 403
+ 
+     allowed = sum(1 for e in ACCESS_EVENTS if e['result'] == 'ALLOWED')
+     denied = sum(1 for e in ACCESS_EVENTS if e['result'] == 'DENIED')
+     rejected = sum(1 for e in ACCESS_EVENTS if e['result'] == 'REJECTED')
+ 
+     return jsonify({'allowed': allowed, 'denied': denied, 'rejected': rejected})
+ 
+ 
+ @app.route('/api/admin/requests', methods=['GET'])
+ def admin_pending_requests():
+-    if not g.user_id or g.user_role != 'Admin':
++    if not g.user_id or not _is_admin_session():
+         return jsonify({'error': 'Forbidden'}), 403
+ 
+     pending = [r for r in ACCESS_REQUESTS if r['status'] == 'PENDING']
+     return jsonify({'requests': pending})
+ 
+ 
+ @app.route('/api/admin/approve-request', methods=['POST'])
+ def approve_request():
+-    if not g.user_id or g.user_role != 'Admin':
++    if not g.user_id or not _is_admin_session():
+         return jsonify({'error': 'Forbidden'}), 403
+ 
+     data = request.get_json(silent=True) or {}
+     request_id = data.get('requestId', '')
+     expires_in = data.get('expiresInSeconds', 600)
+     if not isinstance(request_id, str) or not request_id:
+         return jsonify({'error': 'Invalid requestId'}), 400
+ 
+     target_request = next((r for r in ACCESS_REQUESTS if r['id'] == request_id), None)
+     if not target_request:
+         return jsonify({'error': 'Request not found'}), 404
+ 
+     target_request['status'] = 'APPROVED'
+     token = secrets.token_urlsafe(32)
+     expiry = time.time() + (expires_in if isinstance(expires_in, int) and expires_in > 0 else 600)
+     TEMP_APPROVALS[token] = {
+         'user': target_request['userId'],
+         'user_name': target_request['userName'],
+         'user_role': next((u['role'] for u in AUTH_DB.values() if u['id'] == target_request['userId']), 'Unknown'),
+         'document_id': target_request['documentId'],
+         'document_title': target_request['documentTitle'],
+         'expires_at': expiry,
+     }
+     log_access_event(target_request['userId'], target_request['userName'], TEMP_APPROVALS[token]['user_role'], target_request['documentId'], target_request['documentTitle'], 'ALLOWED', 'token_created')
+     return jsonify({'success': True, 'token': token, 'expiresAt': expiry})
+ 
+ 
+ @app.route('/api/admin/stats', methods=['GET'])
+ def get_admin_stats():
+-    if not g.user_id or g.user_role != 'Admin':
++    if not g.user_id or not _is_admin_session():
+         return jsonify({'error': 'Forbidden'}), 403
+ 
+     conn = get_db()
+     c = conn.cursor()
+     c.execute('SELECT COUNT(*) FROM access_logs')
+     total = c.fetchone()[0]
+     c.execute("SELECT COUNT(*) FROM access_logs WHERE access_result='DENIED'")
+     denied = c.fetchone()[0]
+     c.execute("SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT 50")
+     recent_events = [dict(r) for r in c.fetchall()]
+     violations = [event for event in recent_events if event['access_result'] == 'DENIED'][:10]
+     conn.close()
+ 
+     return jsonify({
+         'total_requests': total,
+         'denied_requests': denied,
+         'recent_events': recent_events,
+         'violations': violations,
+         'threats': get_flagged_users(),
+     })
+ 
+ 
+ init_db()
+ 
+ if __name__ == '__main__':

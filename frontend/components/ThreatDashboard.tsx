@@ -12,6 +12,10 @@ interface ThreatDashboardProps {
   currentUser: User;
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onBlocked: () => Promise<void>;
+  roleBreakdown: Array<{ role_title: string; count: number }>;
+  clearanceDistribution: Array<{ clearance_level: number; count: number }>;
+  clearanceMismatchDenied: number;
+  onApprovalToken: (documentId: string, token: string) => void;
 }
 
 interface LiveStatsResponse {
@@ -30,7 +34,7 @@ interface AccessRequestItem {
   status: 'PENDING' | 'APPROVED';
 }
 
-export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked }) => {
+export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked, roleBreakdown, clearanceDistribution, clearanceMismatchDenied, onApprovalToken }) => {
   const [analysis, setAnalysis] = useState('Initializing threat rule engine...');
   const [roleFilter, setRoleFilter] = useState<'All' | 'Developer' | 'HR' | 'Finance' | 'Admin'>('All');
   const [adminTab, setAdminTab] = useState<'events' | 'requests'>('events');
@@ -122,6 +126,9 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
       return;
     }
     if (!res.ok) return;
+    const data = await res.json();
+    const req = requests.find(r => r.id === requestId);
+    if (req && data?.approvalToken) onApprovalToken(req.documentId, data.approvalToken);
     setRequests(prev => prev.filter(r => r.id !== requestId));
   };
 
@@ -157,6 +164,7 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
           { label: 'Denied',           value: liveStats.denied,   color: 'text-danger' },
           { label: 'Rejected',         value: liveStats.rejected, color: 'text-warning' },
           { label: 'Active Threats',   value: alerts.length,      color: 'text-warning' },
+          { label: 'Clearance Mismatch Denies', value: clearanceMismatchDenied, color: 'text-danger' },
         ].map(stat => (
           <div key={stat.label} className="bg-surface p-4 rounded-lg border border-gray-700">
             <h3 className="text-gray-400 text-xs font-mono uppercase">{stat.label}</h3>
@@ -166,6 +174,26 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-surface border border-gray-700 rounded-lg p-4">
+          <h3 className="text-sm text-gray-300 font-bold mb-3">Role Title Breakdown</h3>
+          <div className="space-y-2 text-xs">
+            {roleBreakdown.map((item) => (
+              <div key={item.role_title} className="flex justify-between text-gray-300">
+                <span>{item.role_title}</span><span>{item.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-surface border border-gray-700 rounded-lg p-4">
+          <h3 className="text-sm text-gray-300 font-bold mb-3">Clearance Distribution</h3>
+          <div className="space-y-2 text-xs">
+            {clearanceDistribution.map((item) => (
+              <div key={item.clearance_level} className="flex justify-between text-gray-300">
+                <span>CLR-{item.clearance_level}</span><span>{item.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
         {/* Charts */}
         <div className="lg:col-span-2 bg-surface p-4 rounded-lg border border-gray-700 min-h-[300px]">
           <h3 className="text-gray-300 font-bold mb-4 flex items-center gap-2">
