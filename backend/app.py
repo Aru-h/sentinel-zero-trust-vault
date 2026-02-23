@@ -53,6 +53,19 @@ REQUEST_RATE_TRACKER: dict[str, list[float]] = {}
 USER_RISK: dict[str, dict] = {}
 
 
+def _is_admin_session() -> bool:
+    role = session.get('user_role') or getattr(g, 'user_role', None)
+    role_title = session.get('role_title') or getattr(g, 'role_title', None)
+    return role == 'Admin' or role_title == 'admin'
+
+
+def _username_from_user_id(user_id: str) -> str | None:
+    for username, user in AUTH_DB.items():
+        if user['id'] == user_id:
+            return username
+    return None
+
+
 def _load_encryption_key() -> bytes:
     configured = os.environ.get('ENCRYPTION_KEY')
     if configured:
@@ -370,7 +383,8 @@ def extract_identity():
         g.user_id = session['user_id']
         g.user_name = session['user_name']
         g.user_role = session['user_role']
-        g.username = session['username']
+        g.role_title = session.get('role_title', '')
+        g.username = session.get('username') or _username_from_user_id(g.user_id)
         g.user_clearance_level = session.get('clearance_level', 1)
     else:
         g.user_id = None
@@ -453,7 +467,7 @@ def logout():
 
 @app.route('/dashboard')
 def dashboard_view():
-    if 'user_id' not in session or session.get('user_role') != 'Admin':
+    if 'user_id' not in session or not _is_admin_session():
         return redirect(url_for('login'))
     return render_template('dashboard.html',
                            user_name=session.get('user_name'),
@@ -582,7 +596,7 @@ def request_temporary_access():
 
 @app.route('/api/admin/block-user', methods=['POST'])
 def block_user():
-    if not g.user_id or g.user_role != 'Admin':
+    if not g.user_id or not _is_admin_session():
         return jsonify({'error': 'Forbidden'}), 403
 
     data = request.get_json(silent=True) or {}
@@ -597,7 +611,7 @@ def block_user():
 
 @app.route('/api/admin/live-stats', methods=['GET'])
 def live_stats():
-    if not g.user_id or g.user_role != 'Admin':
+    if not g.user_id or not _is_admin_session():
         return jsonify({'error': 'Forbidden'}), 403
 
     allowed = sum(1 for e in ACCESS_EVENTS if e['result'] == 'ALLOWED')
@@ -609,7 +623,7 @@ def live_stats():
 
 @app.route('/api/admin/requests', methods=['GET'])
 def admin_pending_requests():
-    if not g.user_id or g.user_role != 'Admin':
+    if not g.user_id or not _is_admin_session():
         return jsonify({'error': 'Forbidden'}), 403
 
     pending = [r for r in ACCESS_REQUESTS if r['status'] == 'PENDING']
@@ -618,7 +632,7 @@ def admin_pending_requests():
 
 @app.route('/api/admin/approve-request', methods=['POST'])
 def approve_request():
-    if not g.user_id or g.user_role != 'Admin':
+    if not g.user_id or not _is_admin_session():
         return jsonify({'error': 'Forbidden'}), 403
 
     data = request.get_json(silent=True) or {}
@@ -648,7 +662,7 @@ def approve_request():
 
 @app.route('/api/admin/stats', methods=['GET'])
 def get_admin_stats():
-    if not g.user_id or g.user_role != 'Admin':
+    if not g.user_id or not _is_admin_session():
         return jsonify({'error': 'Forbidden'}), 403
 
     conn = get_db()

@@ -22,6 +22,9 @@ export interface User {
   name: string;
   role: Role;
   avatar: string;
+  role_title?: string;
+  department?: string;
+  clearance_level?: number;
 }
 
 export interface Document {
@@ -30,6 +33,7 @@ export interface Document {
   classification: Classification;
   department: Role | 'General'; // Which department owns it
   content?: string; // Loaded on demand
+  required_clearance?: number;
   locked: boolean;
 }
 
