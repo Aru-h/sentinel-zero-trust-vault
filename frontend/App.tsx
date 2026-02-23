@@ -27,6 +27,9 @@ interface BackendThreat {
 interface AdminStatsResponse {
   recent_events?: BackendAccessEvent[];
   threats?: BackendThreat[];
+  role_breakdown?: Array<{ role_title: string; count: number }>;
+  clearance_distribution?: Array<{ clearance_level: number; count: number }>;
+  clearance_mismatch_denied?: number;
 }
 
 interface RequestAccessResponse {
@@ -47,6 +50,10 @@ function App() {
   const [deniedLog, setDeniedLog]             = useState<AccessLog | null>(null);
   const [openDocument, setOpenDocument]       = useState<Document | null>(null);
   const [activeTab, setActiveTab]             = useState<'documents' | 'admin'>('documents');
+  const [approvalTokens, setApprovalTokens]   = useState<Record<string, string>>({});
+  const [roleBreakdown, setRoleBreakdown]     = useState<Array<{ role_title: string; count: number }>>([]);
+  const [clearanceDist, setClearanceDist]     = useState<Array<{ clearance_level: number; count: number }>>([]);
+  const [clearanceMismatchDenied, setClearanceMismatchDenied] = useState(0);
   const departments = Array.from(new Set(MOCK_DOCUMENTS.map((doc) => doc.department)));
   const [selectedDepartment, setSelectedDepartment] = useState<string>(departments[0] ?? 'General');
 
@@ -83,8 +90,11 @@ function App() {
             id:     data.user.id,
             name:   data.user.name,
             role:   data.user.role as Role,
+            ...(data.user.role_title ? { role_title: data.user.role_title } : {}),
+            ...(data.user.department ? { department: data.user.department } : {}),
+            ...(typeof data.user.clearance_level === 'number' ? { clearance_level: data.user.clearance_level } : {}),
             avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
-          });
+          } as User);
           setIsAuthenticated(true);
         } else if (res.status === 403) {
           const data = await res.json();
@@ -118,7 +128,7 @@ function App() {
     try {
       const res = await authFetch(`${API_URL}/api/access`, {
         method: 'POST',
-        body: JSON.stringify({ documentId: doc.id }),
+        body: JSON.stringify({ documentId: doc.id, temporaryToken: approvalTokens[doc.id] }),
       });
 
       if (res.status === 401) { handleLogout(); return; }
@@ -163,8 +173,11 @@ function App() {
         });
       }
 
-      if (data.access === 'ALLOWED') setOpenDocument(doc);
-      else setDeniedLog(logEntry);
+      if (data.access === 'ALLOWED' && data.document) {
+        setOpenDocument({ ...doc, ...data.document, locked: false });
+      } else {
+        setDeniedLog(logEntry);
+      }
 
     } catch (e) {
       console.error('Access request failed', e);
@@ -221,6 +234,9 @@ function App() {
 
         setLogs(syncedLogs);
         setAlerts(syncedAlerts);
+        setRoleBreakdown(data.role_breakdown ?? []);
+        setClearanceDist(data.clearance_distribution ?? []);
+        setClearanceMismatchDenied(data.clearance_mismatch_denied ?? 0);
       } catch (error) {
         console.error('Failed to sync admin stats', error);
       }
@@ -295,7 +311,19 @@ function App() {
             <img src={currentUser.avatar} alt={currentUser.name} className="w-9 h-9 rounded-full border-2 border-primary/30" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold truncate">{currentUser.name}</p>
-              <p className={`text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'}`}>{currentUser.role}</p>
+              <p className={`text-xs ${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'}`}>
+                {currentUser.role}
+                {(currentUser as User & { role_title?: string }).role_title ? ` · ${(currentUser as User & { role_title?: string }).role_title}` : ''}
+              </p>
+              {((currentUser as User & { department?: string; clearance_level?: number }).department ||
+                typeof (currentUser as User & { clearance_level?: number }).clearance_level === 'number') && (
+                <p className={`text-[10px] ${theme === 'dark' ? 'text-slate-500' : 'text-text-muted'}`}>
+                  {(currentUser as User & { department?: string }).department ? `Dept: ${(currentUser as User & { department?: string }).department}` : ''}
+                  {typeof (currentUser as User & { clearance_level?: number }).clearance_level === 'number'
+                    ? `${(currentUser as User & { department?: string }).department ? ' · ' : ''}CLR-${(currentUser as User & { clearance_level?: number }).clearance_level}`
+                    : ''}
+                </p>
+              )}
             </div>
             <button onClick={handleLogout} title="Logout" className={`${theme === 'dark' ? 'text-slate-400' : 'text-text-muted'} hover:text-danger transition-colors`}>
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -410,7 +438,12 @@ function App() {
                       </span>
                     </div>
                     <h3 className={`text-lg font-bold mb-1 group-hover:text-primary ${theme === 'dark' ? 'text-slate-100' : 'text-text-primary'}`}>{doc.title}</h3>
-                    <p className={`text-xs mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-text-secondary'}`}>{doc.department} Dept.</p>
+                    <p className={`text-xs mb-4 ${theme === 'dark' ? 'text-slate-400' : 'text-text-secondary'}`}>
+                      {doc.department} Dept.
+                      {typeof (doc as Document & { required_clearance?: number }).required_clearance === 'number'
+                        ? ` · Req CLR-${(doc as Document & { required_clearance?: number }).required_clearance}`
+                        : ''}
+                    </p>
                     <div className={`flex items-center text-xs ${theme === 'dark' ? 'text-slate-500' : 'text-text-muted'}`}>
                       <span className="mr-2">ID: {doc.id}</span>
                       <span className={`w-1 h-1 rounded-full mx-1 ${theme === 'dark' ? 'bg-slate-500' : 'bg-text-muted'}`}></span>
@@ -423,7 +456,17 @@ function App() {
           )}
 
           {activeTab === 'admin' && (
-            <ThreatDashboard logs={logs} alerts={alerts} currentUser={currentUser} authFetch={authFetch} onBlocked={handleLogout} />
+            <ThreatDashboard
+              logs={logs}
+              alerts={alerts}
+              currentUser={currentUser}
+              authFetch={authFetch}
+              onBlocked={handleLogout}
+              roleBreakdown={roleBreakdown}
+              clearanceDistribution={clearanceDist}
+              clearanceMismatchDenied={clearanceMismatchDenied}
+              onApprovalToken={(documentId, token) => setApprovalTokens(prev => ({ ...prev, [documentId]: token }))}
+            />
           )}
         </div>
       </main>

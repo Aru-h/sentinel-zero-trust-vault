@@ -12,6 +12,10 @@ interface ThreatDashboardProps {
   currentUser: User;
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onBlocked: () => Promise<void>;
+  roleBreakdown?: Array<{ role_title: string; count: number }> ;
+  clearanceDistribution?: Array<{ clearance_level: number; count: number }>;
+  clearanceMismatchDenied?: number;
+  onApprovalToken?: (documentId: string, token: string) => void;
 }
 
 interface LiveStatsResponse {
@@ -30,7 +34,7 @@ interface AccessRequestItem {
   status: 'PENDING' | 'APPROVED';
 }
 
-export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked }) => {
+export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, currentUser, authFetch, onBlocked, onApprovalToken }) => {
   const [analysis, setAnalysis] = useState('Initializing threat rule engine...');
   const [roleFilter, setRoleFilter] = useState<'All' | 'Developer' | 'HR' | 'Finance' | 'Admin'>('All');
   const [adminTab, setAdminTab] = useState<'events' | 'requests'>('events');
@@ -109,7 +113,7 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
     }
   }, [adminTab, authFetch, onBlocked]);
 
-  const handleApproveRequest = async (requestId: string) => {
+  const handleApproveRequest = async (requestId: string, documentId: string) => {
     const res = await authFetch(`${API_URL}/api/admin/approve-request`, {
       method: 'POST',
       body: JSON.stringify({ requestId }),
@@ -122,6 +126,11 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
       return;
     }
     if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    const token = typeof data?.token === 'string' ? data.token : '';
+    if (token && onApprovalToken) {
+      onApprovalToken(documentId, token);
+    }
     setRequests(prev => prev.filter(r => r.id !== requestId));
   };
 
@@ -304,7 +313,7 @@ export const ThreatDashboard: React.FC<ThreatDashboardProps> = ({ logs, alerts, 
                     <td className="px-4 py-2 text-gray-300">{item.documentTitle} ({item.documentId})</td>
                     <td className="px-4 py-2 text-gray-400">{new Date(item.timestamp * 1000).toLocaleString()}</td>
                     <td className="px-4 py-2 text-warning font-bold">{item.status}</td>
-                    <td className="px-4 py-2"><button className="bg-primary text-white px-2 py-1 rounded" onClick={() => handleApproveRequest(item.id)}>Approve</button></td>
+                    <td className="px-4 py-2"><button className="bg-primary text-white px-2 py-1 rounded" onClick={() => handleApproveRequest(item.id, item.documentId)}>Approve</button></td>
                   </tr>
                 ))}
                 {requests.length === 0 && (
