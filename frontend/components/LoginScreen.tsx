@@ -52,6 +52,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           id:     data.user.id,
           name:   data.user.name,
           role:   data.user.role as Role,
+          role_title: data.user.role_title,
+          department: data.user.department,
+          clearance_level: data.user.clearance_level,
           avatar: `https://picsum.photos/seed/${data.user.id}/100/100`,
         };
         // Pass CSRF token to parent — stored in React state, never in localStorage

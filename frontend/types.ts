@@ -5,6 +5,9 @@ export enum Role {
   FINANCE = 'Finance',
 }
 
+export type RoleTitle = 'admin' | 'head' | 'employee' | 'intern';
+export type Department = 'admin' | 'hr' | 'finance' | 'dev';
+
 export enum Classification {
   PUBLIC = 'Public',
   INTERNAL = 'Internal',
@@ -21,6 +24,9 @@ export interface User {
   id: string;
   name: string;
   role: Role;
+  role_title: RoleTitle;
+  department: Department;
+  clearance_level: number;
   avatar: string;
 }
 
@@ -28,8 +34,9 @@ export interface Document {
   id: string;
   title: string;
   classification: Classification;
-  department: Role | 'General'; // Which department owns it
-  content?: string; // Loaded on demand
+  department: Department;
+  required_clearance?: number;
+  content?: string;
   locked: boolean;
 }
 
@@ -52,11 +59,4 @@ export interface ThreatAlert {
   userName: string;
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   description: string;
-}
-
-export interface SecurityStats {
-  totalRequests: number;
-  deniedRequests: number;
-  activeThreats: number;
-  lastScan: string;
 }
